@@ -94,7 +94,8 @@ async function sqliteStore(file) {
 // The service-role key stays server-side (Vercel env var); the browser never sees it.
 function supabaseStore(url, key) {
   const base = `${url.replace(/\/$/, '')}/rest/v1`;
-  const headers = { apikey: key, authorization: `Bearer ${key}`, 'content-type': 'application/json' };
+  // Legacy service_role keys are JWTs and also go in Authorization; new sb_secret_ keys go in apikey only.
+  const headers = { apikey: key, 'content-type': 'application/json', ...(key.startsWith('eyJ') ? { authorization: `Bearer ${key}` } : {}) };
 
   async function call(method, path, body, extra = {}) {
     const res = await fetch(`${base}/${path}`, { method, headers: { ...headers, ...extra }, body: body === undefined ? undefined : JSON.stringify(body) });
