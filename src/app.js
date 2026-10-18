@@ -6,7 +6,7 @@
 //   POST /api/agent/voice          one spoken turn: Sarvam STT -> agent -> Sarvam TTS
 //   GET  /api/brief/:session_id    live brief + change history for the side panel
 
-import { timingSafeEqual } from 'node:crypto';
+import { timingSafeEqual, createHash } from 'node:crypto';
 import { openStore } from './store.js';
 import { createIntake, IntakeError } from './intake.js';
 import { agentTurn } from './agent.js';
@@ -61,6 +61,28 @@ function allowed(req) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+export function supabaseFingerprint() {
+  const raw = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
+  const key = raw.trim();
+  let role = null;
+  let ref = null;
+  try {
+    const claims = JSON.parse(Buffer.from(key.split('.')[1], 'base64url').toString('utf8'));
+    role = claims.role ?? null;
+    ref = claims.ref ?? null;
+  } catch { /* not a JWT */ }
+  const url = (process.env.SUPABASE_URL ?? '').trim();
+  return {
+    url_project: url ? new URL(url).hostname.split('.')[0] : null,
+    key_length: key.length,
+    key_has_surrounding_whitespace: raw !== key,
+    key_has_quotes: /^["']|["']$/.test(key),
+    key_role: role,
+    key_project: ref,
+    key_fingerprint: key ? createHash('sha256').update(key).digest('hex').slice(0, 8) : null,
+  };
+}
+
 export default async function handler(req, res) {
   const url = new URL(req.url, 'http://localhost');
   const path = url.pathname.replace(/\/+$/, '');
@@ -77,6 +99,10 @@ export default async function handler(req, res) {
     }
 
     if (!allowed(req)) return send(res, 401, { error: { code: 'ACCESS_CODE', message: 'Enter the access code to use this demo.' } });
+
+    // Setup check: non-secret facts about the Supabase settings, to compare with a working .env.
+    if (req.method === 'GET' && path === '/api/diag') return send(res, 200, supabaseFingerprint());
+
     const { intake } = await getIntake();
 
     let m = path.match(/^\/api\/tools\/([a-z_]+)$/);
