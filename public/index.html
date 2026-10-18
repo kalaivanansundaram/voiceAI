@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mappls Problem Intake</title>
+<meta name="description" content="Tell us what went wrong in the Mappls app. A short voice interview turns it into a confirmed problem brief.">
+<style>
+  :root {
+    --bg: #f5f7fa; --panel: #ffffff; --ink: #18202b; --muted: #5d6b7c; --line: #dfe5ec;
+    --accent: #0a6cff; --accent-ink: #ffffff; --soft: #eaf2ff;
+    --ok: #137a43; --ok-soft: #e3f5ea; --warn: #9a5b00; --warn-soft: #fff3dc; --bad: #b42318; --bad-soft: #fde8e7;
+    --obs: #137a43; --claim: #6b4fd8; --assume: #9a5b00;
+    --radius: 12px;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f141a; --panel: #171e27; --ink: #e8edf3; --muted: #9aa7b6; --line: #2a3441;
+      --accent: #4b93ff; --accent-ink: #06101f; --soft: #16243a;
+      --ok: #5cd08f; --ok-soft: #12291d; --warn: #f2b44f; --warn-soft: #2e2412; --bad: #ff7a6e; --bad-soft: #321614;
+      --obs: #5cd08f; --claim: #a995ff; --assume: #f2b44f;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f141a; --panel: #171e27; --ink: #e8edf3; --muted: #9aa7b6; --line: #2a3441;
+    --accent: #4b93ff; --accent-ink: #06101f; --soft: #16243a;
+    --ok: #5cd08f; --ok-soft: #12291d; --warn: #f2b44f; --warn-soft: #2e2412; --bad: #ff7a6e; --bad-soft: #321614;
+    --obs: #5cd08f; --claim: #a995ff; --assume: #f2b44f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); line-height: 1.45; }
+  header { padding: 20px 16px 8px; max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 1.35rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0; font-size: .95rem; }
+  main { max-width: 1180px; margin: 0 auto; padding: 8px 16px 40px; display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 16px; }
+  @media (max-width: 880px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; min-width: 0; }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .tab { border: 1px solid var(--line); background: transparent; color: var(--ink); padding: 7px 12px; border-radius: 999px; cursor: pointer; font: inherit; font-size: .9rem; }
+  .tab[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .hint { color: var(--muted); font-size: .85rem; margin: 0 0 12px; }
+  .log { display: flex; flex-direction: column; gap: 8px; min-height: 240px; max-height: 52vh; overflow-y: auto; padding: 4px 2px 8px; }
+  .msg { padding: 9px 12px; border-radius: 12px; max-width: 88%; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg.user { align-self: flex-end; background: var(--accent); color: var(--accent-ink); }
+  .msg.agent { align-self: flex-start; background: var(--soft); }
+  .msg.sys { align-self: center; color: var(--muted); font-size: .82rem; background: transparent; text-align: center; }
+  .msg.err { align-self: center; background: var(--bad-soft); color: var(--bad); font-size: .88rem; }
+  .trace { align-self: flex-start; font-family: ui-monospace, Consolas, monospace; font-size: .74rem; color: var(--muted); border-left: 2px solid var(--line); padding-left: 8px; overflow-wrap: anywhere; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  input[type=text], textarea, select { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; width: 100%; }
+  textarea { min-height: 84px; resize: vertical; }
+  .grow { flex: 1 1 220px; min-width: 0; }
+  button.btn { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--ink); padding: 9px 14px; border-radius: 10px; cursor: pointer; }
+  button.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  button.btn.danger { color: var(--bad); }
+  button.btn:disabled { opacity: .5; cursor: default; }
+  .mic { width: 84px; height: 84px; border-radius: 50%; border: 0; background: var(--accent); color: var(--accent-ink); font-size: .85rem; font-weight: 600; cursor: pointer; }
+  .mic.rec { background: var(--bad); color: #fff; animation: pulse 1.2s infinite; }
+  .mic:disabled { opacity: .5; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 10px color-mix(in srgb, var(--bad) 25%, transparent); } }
+  @media (prefers-reduced-motion: reduce) { .mic.rec { animation: none; } }
+  .voicebar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 8px; }
+  .status { color: var(--muted); font-size: .9rem; }
+  .brief h2 { font-size: 1.05rem; margin: 0 0 4px; }
+  .meta { color: var(--muted); font-size: .85rem; margin-bottom: 10px; }
+  .field { border-top: 1px solid var(--line); padding: 8px 0; }
+  .field .k { font-size: .8rem; color: var(--muted); display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+  .field .v { overflow-wrap: anywhere; }
+  .pill { font-size: .72rem; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+  .pill.answered { background: var(--ok-soft); color: var(--ok); }
+  .pill.suggested { background: var(--warn-soft); color: var(--warn); }
+  .pill.missing { background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
+  .pill.unknown { background: var(--bad-soft); color: var(--bad); }
+  .kinds { display: grid; gap: 10px; margin-top: 12px; }
+  .kinds h3 { font-size: .85rem; margin: 0 0 4px; }
+  .kinds ul { margin: 0; padding-left: 18px; font-size: .9rem; }
+  .k-observation h3 { color: var(--obs); } .k-claim h3 { color: var(--claim); } .k-assumption h3 { color: var(--assume); }
+  .code { font-family: ui-monospace, Consolas, monospace; font-size: 1.05rem; letter-spacing: .12em; }
+  .banner { padding: 10px 12px; border-radius: 10px; margin-bottom: 12px; font-size: .9rem; }
+  .banner.ok { background: var(--ok-soft); color: var(--ok); }
+  .banner.warn { background: var(--warn-soft); color: var(--warn); }
+  .banner.bad { background: var(--bad-soft); color: var(--bad); }
+  details summary { cursor: pointer; color: var(--muted); font-size: .85rem; margin-top: 12px; }
+  .hist { font-size: .78rem; color: var(--muted); font-family: ui-monospace, Consolas, monospace; overflow-wrap: anywhere; }
+  .hidden { display: none !important; }
+  .guided-q { font-size: 1.05rem; font-weight: 600; margin: 4px 0 10px; }
+  .gap { height: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Mappls Problem Intake</h1>
+  <p class="sub">Tell us what went wrong in the Mappls app. A short interview turns it into a problem brief you check and approve. Nothing is sent or submitted anywhere.</p>
+</header>
+
+<main>
+  <section class="card" aria-label="Conversation">
+    <div id="accessBox" class="hidden">
+      <p class="hint">This demo is protected. Enter the access code you were given.</p>
+      <div class="row"><input id="accessInput" type="text" class="grow" autocomplete="off" placeholder="Access code"><button class="btn primary" id="accessBtn">Continue</button></div>
+      <div class="gap"></div>
+    </div>
+
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" data-mode="voice">Voice (Sarvam)</button>
+      <button class="tab" role="tab" data-mode="text">Text chat (Sarvam)</button>
+      <button class="tab" role="tab" data-mode="guided">Guided form (free)</button>
+    </div>
+    <div id="configBanner"></div>
+
+    <div id="agentPane">
+      <p class="hint" id="agentHint"></p>
+      <div class="log" id="log" aria-live="polite"></div>
+      <div id="voiceControls" class="voicebar">
+        <button class="mic" id="micBtn" aria-label="Tap to talk">Tap to talk</button>
+        <div class="status" id="voiceStatus">Tap, speak, then tap again (or pause) to send.</div>
+      </div>
+      <div id="textControls" class="row hidden" style="margin-top:8px">
+        <input id="textInput" type="text" class="grow" placeholder="Type what went wrong…" autocomplete="off">
+        <button class="btn primary" id="sendBtn">Send</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn" id="newBtn">Start over</button>
+        <label class="hint" style="margin:0"><input type="checkbox" id="showTrace"> show tool calls</label>
+      </div>
+    </div>
+
+    <div id="guidedPane" class="hidden">
+      <p class="hint">Same workflow without AI or voice — useful for testing and costs nothing.</p>
+      <div id="guidedBody"></div>
+    </div>
+  </section>
+
+  <aside class="card brief" aria-label="Problem brief">
+    <h2>Problem brief</h2>
+    <div class="meta" id="briefMeta">No intake yet.</div>
+    <div id="briefBody"></div>
+  </aside>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  del(k) { try { localStorage.removeItem(k); } catch {} },
+};
+
+let config = null;
+let mode = store.get('mode') || 'voice';
+let sessionId = store.get('sessionId');
+let messages = store.get('messages') || [];
+let accessCode = store.get('accessCode') || '';
+let busy = false;
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body === undefined ? 'GET' : 'POST',
+    headers: { 'content-type': 'application/json', 'x-access-code': accessCode },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({ error: { message: 'The server returned an unreadable response.' } }));
+  if (res.status === 401) { $('accessBox').classList.remove('hidden'); }
+  if (!res.ok) { const e = new Error(data?.error?.message || `Request failed (${res.status})`); e.code = data?.error?.code; throw e; }
+  return data;
+}
+
+// ---------- conversation log ----------
+function add(kind, text) {
+  const d = document.createElement('div');
+  d.className = kind === 'trace' ? 'trace' : `msg ${kind}`;
+  if (kind === 'trace' && !$('showTrace').checked) d.classList.add('hidden');
+  d.textContent = text;
+  $('log').appendChild(d);
+  $('log').scrollTop = $('log').scrollHeight;
+}
+function renderHistory() {
+  $('log').innerHTML = '';
+  for (const m of messages) {
+    if (m.role === 'user') add('user', m.content.replace(/ \[spoken; detected language [^\]]+\]$/, ''));
+    else if (m.role === 'assistant' && m.content && !m.tool_calls?.length) add('agent', m.content);
+    else if (m.role === 'assistant' && m.tool_calls?.length) for (const c of m.tool_calls) add('trace', `→ ${c.function.name}(${c.function.arguments})`);
+  }
+  if (!messages.length) add('agent', mode === 'voice'
+    ? 'Namaste! Tap the button and tell me what went wrong with Mappls. If you have a resume code, just say it.'
+    : 'Namaste! What went wrong with Mappls? If you have a resume code, type it.');
+}
+$('showTrace').addEventListener('change', () => document.querySelectorAll('.trace').forEach((t) => t.classList.toggle('hidden', !$('showTrace').checked)));
+
+function afterTurn(r) {
+  messages = r.messages;
+  store.set('messages', messages);
+  for (const t of r.trace || []) add('trace', `→ ${t.tool}(${JSON.stringify(t.args)}) ${t.ok ? '✓' : '✗ ' + (t.error?.message || '')}`);
+  add('agent', r.reply);
+  if (r.session_id) { sessionId = r.session_id; store.set('sessionId', sessionId); }
+  refreshBrief();
+}
+
+// ---------- text mode ----------
+async function sendText() {
+  const text = $('textInput').value.trim();
+  if (!text || busy) return;
+  $('textInput').value = '';
+  add('user', text);
+  setBusy(true, 'Thinking…');
+  try { afterTurn(await api('/api/agent/text', { messages, text })); }
+  catch (e) { add('err', e.message); }
+  finally { setBusy(false); }
+}
+$('sendBtn').addEventListener('click', sendText);
+$('textInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendText(); });
+
+// ---------- voice mode ----------
+let recorder = null, chunks = [], audioCtx = null, silenceTimer = null, stream = null, player = null;
+function setBusy(b, status) {
+  busy = b;
+  $('micBtn').disabled = b; $('sendBtn').disabled = b;
+  $('voiceStatus').textContent = status || 'Tap, speak, then tap again (or pause) to send.';
+}
+async function startRecording() {
+  if (player) { player.pause(); player = null; }
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+  catch { add('err', 'Microphone permission was blocked. Allow the microphone for this site, or use Text chat.'); return; }
+  const type = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'].find((t) => window.MediaRecorder?.isTypeSupported?.(t)) || '';
+  recorder = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
+  chunks = [];
+  recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  recorder.onstop = sendRecording;
+  recorder.start();
+  $('micBtn').classList.add('rec'); $('micBtn').textContent = 'Listening'; $('voiceStatus').textContent = 'Listening… tap to send, or just pause.';
+  watchSilence();
+}
+function watchSilence() {
+  try {
+    audioCtx = new AudioContext();
+    const analyser = audioCtx.createAnalyser();
+    audioCtx.createMediaStreamSource(stream).connect(analyser);
+    const data = new Uint8Array(analyser.fftSize);
+    let spoke = false, quietSince = performance.now();
+    const started = performance.now();
+    const tick = () => {
+      if (!recorder || recorder.state !== 'recording') return;
+      analyser.getByteTimeDomainData(data);
+      let peak = 0; for (const v of data) peak = Math.max(peak, Math.abs(v - 128));
+      const t = performance.now();
+      if (peak > 12) { spoke = true; quietSince = t; }
+      if ((spoke && t - quietSince > 1500) || t - started > 60000) return stopRecording();
+      silenceTimer = requestAnimationFrame(tick);
+    };
+    tick();
+  } catch { /* manual stop still works */ }
+}
+function stopRecording() {
+  cancelAnimationFrame(silenceTimer);
+  if (recorder && recorder.state === 'recording') recorder.stop();
+  stream?.getTracks().forEach((t) => t.stop());
+  audioCtx?.close().catch(() => {});
+  $('micBtn').classList.remove('rec'); $('micBtn').textContent = 'Tap to talk';
+}
+async function sendRecording() {
+  const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+  recorder = null;
+  if (blob.size < 2000) { setBusy(false, 'Did not catch that — tap and try again.'); return; }
+  setBusy(true, 'Transcribing and thinking…');
+  try {
+    const b64 = await new Promise((ok, fail) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1]); r.onerror = fail; r.readAsDataURL(blob); });
+    const r = await api('/api/agent/voice', { messages, audio_base64: b64, mime: blob.type });
+    if (r.heard?.transcript) add('user', r.heard.transcript);
+    afterTurn(r);
+    if (r.speech?.audio_base64) {
+      player = new Audio(`data:${r.speech.mime};base64,${r.speech.audio_base64}`);
+      setBusy(false, 'Speaking… tap to interrupt and answer.');
+      player.onended = () => setBusy(false);
+      player.play().catch(() => setBusy(false));
+      return;
+    }
+  } catch (e) { add('err', e.message); }
+  setBusy(false);
+}
+$('micBtn').addEventListener('click', () => (recorder ? stopRecording() : startRecording()));
+
+$('newBtn').addEventListener('click', () => {
+  if (!confirm('Start a new conversation? A saved intake stays saved — you can return to it with its resume code.')) return;
+  messages = []; sessionId = null; store.del('messages'); store.del('sessionId');
+  renderHistory(); refreshBrief(); if (mode === 'guided') renderGuided();
+});
+
+// ---------- guided mode (no AI) ----------
+let guided = null;
+async function guidedCall(name, body) {
+  try {
+    const r = await api(`/api/tools/${name}`, body);
+    if (r.session_id) { sessionId = r.session_id; store.set('sessionId', sessionId); }
+    guided = r; renderGuided(); refreshBrief();
+    return r;
+  } catch (e) { guidedError(e.message); }
+}
+function guidedError(msg) { const b = document.createElement('div'); b.className = 'banner bad'; b.textContent = msg; $('guidedBody').prepend(b); }
+function el(html) { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstChild; }
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+async function renderGuided() {
+  const box = $('guidedBody'); box.innerHTML = '';
+  if (!sessionId) {
+    box.append(el(`<div><div class="guided-q">What went wrong with Mappls?</div>
+      <textarea id="gStart" placeholder="e.g. Yesterday navigation took me into a closed road near Sector 18 Noida…"></textarea>
+      <div class="row" style="margin-top:8px"><button class="btn primary" id="gStartBtn">Start intake</button></div>
+      <div class="gap"></div><div class="row"><input id="gCode" type="text" class="grow" placeholder="Or enter a 6-digit resume code"><button class="btn" id="gResume">Resume</button></div></div>`));
+    $('gStartBtn').onclick = () => guidedCall('start_intake', { starting_input: $('gStart').value });
+    $('gResume').onclick = () => guidedCall('resume_intake', { resume_code: $('gCode').value });
+    return;
+  }
+  if (!guided || guided.session_id !== sessionId) { try { guided = await api('/api/tools/get_status', { session_id: sessionId }); } catch (e) { sessionId = null; store.del('sessionId'); return renderGuided(); } }
+  const n = guided.next;
+  box.append(el(`<p class="hint">Progress ${guided.progress} · resume code <span class="code">${esc(guided.resume_code)}</span></p>`));
+  if (n.type === 'ask' || n.type === 'confirm') {
+    const isCat = n.field === 'category';
+    const input = isCat
+      ? `<select id="gVal">${Object.entries(config.categories).map(([k, l]) => `<option value="${k}" ${n.suggestion === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`
+      : `<textarea id="gVal">${n.type === 'confirm' ? esc(n.suggestion) : ''}</textarea>`;
+    box.append(el(`<div><div class="guided-q">${esc(n.question)}</div>${input}
+      <div class="row" style="margin-top:8px">
+        ${n.type === 'confirm' ? '<button class="btn primary" id="gConfirm">Yes, that is right</button><button class="btn" id="gSave">Save my edit</button>' : '<button class="btn primary" id="gSave">Save answer</button>'}
+        <button class="btn" id="gUnknown">I don't know</button><button class="btn" id="gPause">Pause</button>
+      </div></div>`));
+    if ($('gConfirm')) $('gConfirm').onclick = () => guidedCall('confirm_suggestion', { session_id: sessionId, field: n.field });
+    $('gSave').onclick = () => guidedCall('save_answer', { session_id: sessionId, field: n.field, value: $('gVal').value });
+    $('gUnknown').onclick = () => guidedCall('mark_unknown', { session_id: sessionId, field: n.field, reason: 'person does not know' });
+    $('gPause').onclick = () => guidedCall('pause_intake', { session_id: sessionId });
+  } else if (n.type === 'paused') {
+    box.append(el(`<div class="banner warn">Paused. Your progress is saved. Resume code: <span class="code">${esc(guided.resume_code)}</span></div>`));
+    box.append(el('<button class="btn primary" id="gResume2">Resume now</button>'));
+    $('gResume2').onclick = () => guidedCall('resume_intake', { resume_code: guided.resume_code });
+  } else if (n.type === 'review') {
+    const p = await api('/api/tools/get_preview', { session_id: sessionId });
+    box.append(el(`<div><div class="guided-q">Check the brief on the right. Approve, change something, or cancel?</div>
+      <p class="hint">Use "Change" next to any field to revise it. Approving version ${p.version} only saves the brief — nothing is sent.</p>
+      <div class="row"><button class="btn primary" id="gApprove">Approve version ${p.version}</button><button class="btn danger" id="gCancel">Cancel</button><button class="btn" id="gPause">Pause</button></div></div>`));
+    $('gApprove').onclick = () => guidedCall('finalize_intake', { session_id: sessionId, decision: 'approve', preview_version: p.version });
+    $('gCancel').onclick = () => confirm('Cancel this intake? Nothing will be saved for the team.') && guidedCall('finalize_intake', { session_id: sessionId, decision: 'cancel', preview_version: p.version });
+    $('gPause').onclick = () => guidedCall('pause_intake', { session_id: sessionId });
+  } else {
+    box.append(el(`<div class="banner ${guided.status === 'approved' ? 'ok' : 'warn'}">${esc(n.say)}</div>`));
+  }
+}
+
+function changeField(field) {
+  const f = config.fields.find((x) => x.key === field);
+  const value = field === 'category'
+    ? prompt(`New problem type — one of:\n${Object.keys(config.categories).join(', ')}`)
+    : prompt(`Change "${f.label}" to:`);
+  if (value) guidedCall('save_answer', { session_id: sessionId, field, value });
+}
+
+// ---------- live brief ----------
+async function refreshBrief() {
+  if (!sessionId) { $('briefMeta').textContent = 'No intake yet.'; $('briefBody').innerHTML = ''; return; }
+  let p;
+  try { p = await api(`/api/brief/${sessionId}`); } catch (e) { $('briefMeta').textContent = e.message; return; }
+  const b = p.brief;
+  const statusText = { intake: 'In progress', review: 'Ready for review', paused: 'Paused', approved: `Approved (version ${b.version})`, cancelled: 'Cancelled' }[p.status];
+  $('briefMeta').innerHTML = `${esc(statusText)} · ${esc(p.progress)} · version ${b.version} · resume code <span class="code">${esc(p.resume_code)}</span><br>Route to: <strong>${esc(b.route_to)}</strong>`;
+  const body = $('briefBody'); body.innerHTML = '';
+  if (p.status === 'approved') body.append(el('<div class="banner ok">Approved and saved for the Mappls team. Nothing was sent or submitted.</div>'));
+  if (p.status === 'cancelled') body.append(el('<div class="banner bad">Cancelled. Nothing was sent or submitted.</div>'));
+  const editable = mode === 'guided' && ['intake', 'review'].includes(p.status);
+  for (const f of config.fields) {
+    const a = b.fields[f.key];
+    let v = a.status === 'unknown' ? `Unknown — ${a.basis || ''}` : a.value ?? '—';
+    if (f.key === 'category' && a.value) v = config.categories[a.value] || a.value;
+    const node = el(`<div class="field"><div class="k"><span>${esc(f.label)}</span><span class="row" style="gap:6px"><span class="pill ${a.status}">${a.status}</span>${editable ? `<button class="btn" style="padding:2px 8px;font-size:.75rem" data-f="${f.key}">Change</button>` : ''}</span></div><div class="v">${esc(v)}</div></div>`);
+    body.append(node);
+  }
+  body.querySelectorAll('[data-f]').forEach((btn) => (btn.onclick = () => changeField(btn.dataset.f)));
+  const kinds = el('<div class="kinds"></div>');
+  for (const [k, title, list] of [['observation', 'Observed first-hand', b.observations], ['claim', 'Claims (reported or generalised)', b.claims], ['assumption', 'Assumptions (guesses about cause or fix)', b.assumptions]]) {
+    kinds.append(el(`<div class="k-${k}"><h3>${title} (${list.length})</h3><ul>${list.map((s) => `<li>${esc(s.text)}</li>`).join('') || '<li>none yet</li>'}</ul></div>`));
+  }
+  body.append(kinds);
+  body.append(el(`<details><summary>Change history (${p.history.length})</summary><div class="hist">${p.history.map((h) => `${esc(h.at.slice(11, 19))} ${esc(h.type)} ${esc(JSON.stringify(h.payload))}`).join('<br>')}</div></details>`));
+  body.append(el(`<details><summary>Copy brief as Markdown</summary><textarea readonly style="min-height:180px;margin-top:6px">${esc(p.brief_markdown)}</textarea></details>`));
+}
+
+// ---------- mode switching ----------
+function setMode(m) {
+  mode = m; store.set('mode', m);
+  document.querySelectorAll('.tab').forEach((t) => t.setAttribute('aria-selected', String(t.dataset.mode === m)));
+  const agentMode = m !== 'guided';
+  $('agentPane').classList.toggle('hidden', !agentMode);
+  $('guidedPane').classList.toggle('hidden', agentMode);
+  $('voiceControls').classList.toggle('hidden', m !== 'voice');
+  $('textControls').classList.toggle('hidden', m !== 'text');
+  $('agentHint').textContent = m === 'voice'
+    ? 'Speak in English, Hindi, or another Indian language. Uses Sarvam speech-to-text, chat and voice — test in Text chat first to save credit.'
+    : 'Same agent and tools as voice, typed — spends no speech credit.';
+  if (agentMode) renderHistory(); else renderGuided();
+  refreshBrief();
+}
+document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => setMode(t.dataset.mode)));
+
+$('accessBtn').addEventListener('click', () => { accessCode = $('accessInput').value.trim(); store.set('accessCode', accessCode); $('accessBox').classList.add('hidden'); setMode(mode); });
+
+(async function init() {
+  try { config = await api('/api/config'); }
+  catch (e) { $('configBanner').innerHTML = `<div class="banner bad">${esc(e.message)}</div>`; return; }
+  if (config.access_required && !accessCode) $('accessBox').classList.remove('hidden');
+  if (!config.sarvam) {
+    $('configBanner').innerHTML = '<div class="banner warn">Sarvam API key is not configured on the server, so Voice and Text chat are off. Guided form still works.</div>';
+    document.querySelectorAll('.tab[data-mode="voice"], .tab[data-mode="text"]').forEach((t) => (t.disabled = true));
+    if (mode !== 'guided') mode = 'guided';
+  }
+  setMode(mode);
+})();
+</script>
+</body>
+</html>

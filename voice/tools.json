@@ -1,0 +1,326 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "start_intake",
+      "description": "Start a new saved intake from what the person first said (or a public link they gave). Call once, at the start. Returns session_id, a 6-digit resume_code, what is already known, and the next question.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "starting_input": {
+            "type": "string",
+            "description": "The person's opening description of the problem, in their words (translated to English if needed), or one public http(s) link."
+          }
+        },
+        "required": [
+          "starting_input"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "resume_intake",
+      "description": "Re-open a paused or earlier intake using the 6-digit resume code the person reads out. Returns the same next question they stopped at.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "resume_code": {
+            "type": "string",
+            "description": "Six digits."
+          }
+        },
+        "required": [
+          "resume_code"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_status",
+      "description": "Get the saved progress and the next step for a session. Use if unsure what to ask next.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "description": "The session_id returned by start_intake."
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "save_answer",
+      "description": "Save what the person said for one field (also used to change an earlier answer). Split their answer into short statements and label each one.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "description": "The session_id returned by start_intake."
+          },
+          "field": {
+            "type": "string",
+            "enum": [
+              "reporter",
+              "problem",
+              "category",
+              "location",
+              "when",
+              "what_happened",
+              "expected",
+              "impact",
+              "tried",
+              "device"
+            ],
+            "description": "Which brief field this is about."
+          },
+          "value": {
+            "type": "string",
+            "description": "Their answer in English, faithful to what they said. For field \"category\" use one of: map_data, navigation_route, traffic_eta, search_places, business_listing, app_performance, telematics_device, account_billing, other."
+          },
+          "statements": {
+            "type": "array",
+            "description": "Their answer split into short statements. observation = they saw or measured it themselves; claim = reported by others or a generalisation like \"always\"/\"everyone\"; assumption = a guess about cause or fix.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "observation",
+                    "claim",
+                    "assumption"
+                  ]
+                }
+              },
+              "required": [
+                "text",
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "session_id",
+          "field",
+          "value"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "suggest_answer",
+      "description": "Propose an answer for a still-open field from facts the person already gave. It is NOT saved as their answer until they confirm it with confirm_suggestion.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "description": "The session_id returned by start_intake."
+          },
+          "field": {
+            "type": "string",
+            "enum": [
+              "reporter",
+              "problem",
+              "category",
+              "location",
+              "when",
+              "what_happened",
+              "expected",
+              "impact",
+              "tried",
+              "device"
+            ],
+            "description": "Which brief field this is about."
+          },
+          "value": {
+            "type": "string"
+          },
+          "basis": {
+            "type": "string",
+            "description": "Which earlier statement this comes from."
+          }
+        },
+        "required": [
+          "session_id",
+          "field",
+          "value",
+          "basis"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "confirm_suggestion",
+      "description": "The person said a suggested answer is right. Only call right after they clearly agree.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "description": "The session_id returned by start_intake."
+          },
+          "field": {
+            "type": "string",
+            "enum": [
+              "reporter",
+              "problem",
+              "category",
+              "location",
+              "when",
+              "what_happened",
+              "expected",
+              "impact",
+              "tried",
+              "device"
+            ],
+            "description": "Which brief field this is about."
+          }
+        },
+        "required": [
+          "session_id",
+          "field"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mark_unknown",
+      "description": "The person does not know or does not want to say. Keeps the gap visible in the brief instead of guessing.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "description": "The session_id returned by start_intake."
+          },
+          "field": {
+            "type": "string",
+            "enum": [
+              "reporter",
+              "problem",
+              "category",
+              "location",
+              "when",
+              "what_happened",
+              "expected",
+              "impact",
+              "tried",
+              "device"
+            ],
+            "description": "Which brief field this is about."
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "field",
+          "reason"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "pause_intake",
+      "description": "The person wants to stop for now. Saves progress; read them the resume_code from the result.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "description": "The session_id returned by start_intake."
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_preview",
+      "description": "Get the full brief to read back for final review. Returns version — pass it unchanged to finalize_intake.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "description": "The session_id returned by start_intake."
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "finalize_intake",
+      "description": "Only after reading the latest preview aloud and the person explicitly says approve, or explicitly says cancel. Approving saves the brief for the Mappls team; it does not send anything to anyone.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "description": "The session_id returned by start_intake."
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "approve",
+              "cancel"
+            ]
+          },
+          "preview_version": {
+            "type": "integer",
+            "description": "The version from the get_preview you read aloud."
+          }
+        },
+        "required": [
+          "session_id",
+          "decision",
+          "preview_version"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+]
