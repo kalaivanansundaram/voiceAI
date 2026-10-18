@@ -4,10 +4,13 @@
   "private": true,
   "description": "Voice problem-intake agent for Mappls app users, built on Sarvam (STT, chat, TTS).",
   "type": "module",
-  "engines": { "node": "22.x || 24.x" },
+  "engines": {
+    "node": "22.x || 24.x"
+  },
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning server.js",
     "test": "node --disable-warning=ExperimentalWarning test/checklist.js",
-    "export:voice": "node scripts/export-voice.js"
+    "export:voice": "node scripts/export-voice.js",
+    "setup:supabase": "node scripts/setup-supabase.js"
   }
 }
