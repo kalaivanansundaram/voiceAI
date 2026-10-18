@@ -15,7 +15,13 @@ import { TOOL_NAMES } from './tools.js';
 import { FIELDS, CATEGORIES } from './fields.js';
 
 let intakePromise;
-const getIntake = () => (intakePromise ??= openStore().then((store) => ({ store, intake: createIntake(store) })));
+const getIntake = () =>
+  (intakePromise ??= openStore()
+    .then((store) => ({ store, intake: createIntake(store) }))
+    .catch((err) => {
+      intakePromise = null; // retry on the next request instead of caching the failure
+      throw new IntakeError('STORE', err.message);
+    }));
 
 const MAX_BODY = 4 * 1024 * 1024; // Vercel's request limit is 4.5 MB
 
@@ -99,7 +105,11 @@ export default async function handler(req, res) {
         const reply = 'Sorry, I could not hear that clearly. Could you say it again?';
         return send(res, 200, { heard, reply, messages: body.messages ?? [], trace: [], session_id: null, speech: await speak(reply, 'en-IN') });
       }
-      const turn = await agentTurn(intake, { messages: body.messages, text: heard.transcript, language_code: heard.language_code });
+      // Non-English speech: also get an English translation so tool arguments (the brief) stay in English.
+      if (heard.language_code && heard.language_code !== 'en-IN') {
+        heard.english = (await transcribe(audio, String(body.mime || 'audio/webm'), { translate: true }).catch(() => null))?.transcript || null;
+      }
+      const turn = await agentTurn(intake, { messages: body.messages, text: heard.transcript, english: heard.english, language_code: heard.language_code });
       const speech = await speak(turn.reply, heard.language_code);
       return send(res, 200, { heard, ...turn, speech });
     }

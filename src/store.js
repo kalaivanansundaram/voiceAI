@@ -5,7 +5,13 @@
 // supabase/schema.sql creates the same tables in Supabase.
 
 export async function openStore() {
-  if (process.env.SUPABASE_URL) return supabaseStore(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+  const url = process.env.SUPABASE_URL?.trim();
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+  if (url && key) return supabaseStore(url, key);
+  if (process.env.VERCEL) {
+    throw new Error('On Vercel, set both SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY — serverless functions cannot keep a local database.');
+  }
+  if (url || key) console.warn('Supabase is only half configured (need both SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY); using local SQLite.');
   return sqliteStore(process.env.INTAKE_DB || 'data/intake.db');
 }
 
@@ -87,7 +93,6 @@ async function sqliteStore(file) {
 // Supabase over its REST API (PostgREST) with plain fetch — no SDK needed.
 // The service-role key stays server-side (Vercel env var); the browser never sees it.
 function supabaseStore(url, key) {
-  if (!key) throw new Error('SUPABASE_SERVICE_ROLE_KEY is not set.');
   const base = `${url.replace(/\/$/, '')}/rest/v1`;
   const headers = { apikey: key, authorization: `Bearer ${key}`, 'content-type': 'application/json' };
 

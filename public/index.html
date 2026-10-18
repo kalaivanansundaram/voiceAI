@@ -178,7 +178,7 @@ function add(kind, text) {
 function renderHistory() {
   $('log').innerHTML = '';
   for (const m of messages) {
-    if (m.role === 'user') add('user', m.content.replace(/ \[spoken; detected language [^\]]+\]$/, ''));
+    if (m.role === 'user') add('user', m.content.replace(/ \[spoken; detected language [\s\S]*$/, ''));
     else if (m.role === 'assistant' && m.content && !m.tool_calls?.length) add('agent', m.content);
     else if (m.role === 'assistant' && m.tool_calls?.length) for (const c of m.tool_calls) add('trace', `→ ${c.function.name}(${c.function.arguments})`);
   }

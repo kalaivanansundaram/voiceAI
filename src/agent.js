@@ -10,6 +10,7 @@ import { IntakeError } from './intake.js';
 
 const MAX_TOOL_ROUNDS = 8;
 const MAX_HISTORY = 80;
+const INDIC_SCRIPT = /[ऀ-෿]/; // Devanagari through Sinhala: Hindi, Bengali, Gujarati, Tamil, Telugu, Kannada, Malayalam…
 
 // Only trust the shapes we produce ourselves.
 function cleanHistory(messages) {
@@ -40,6 +41,10 @@ async function runTool(intake, name, rawArgs) {
     return { ok: false, error: { code: 'BAD_ARGUMENTS', message: 'Tool arguments were not valid JSON. Try the call again.' } };
   }
   if (!TOOL_NAMES.includes(name)) return { ok: false, error: { code: 'UNKNOWN_TOOL', message: `No tool named ${name}.` } };
+  // The brief is read by the Mappls team in English; the model sometimes forgets to translate.
+  if (INDIC_SCRIPT.test(JSON.stringify(args))) {
+    return { ok: false, error: { code: 'NOT_ENGLISH', message: 'Tool arguments must be in English. Translate what the person said faithfully into English (keep place names) and call the tool again. Keep speaking to them in their language.' } };
+  }
   try {
     return { ok: true, result: await intake[name](args) };
   } catch (err) {
@@ -48,11 +53,15 @@ async function runTool(intake, name, rawArgs) {
   }
 }
 
-export async function agentTurn(intake, { messages, text, language_code }) {
+export async function agentTurn(intake, { messages, text, english, language_code }) {
   const history = cleanHistory(messages);
   const userText = String(text ?? '').trim();
   if (!userText) throw new IntakeError('EMPTY', 'Nothing was heard. Please try again.');
-  const note = language_code && language_code !== 'en-IN' ? ` [spoken; detected language ${language_code}]` : '';
+  let note = language_code && language_code !== 'en-IN' ? ` [spoken; detected language ${language_code} — reply in this language]` : '';
+  if (english) {
+    const fixed = String(english).slice(0, 2000).replace(/\b(maple'?s|mapples|map ?pls|mapels)\b/gi, 'Mappls');
+    note += ` [English translation, only for tool arguments: ${fixed}]`;
+  }
   history.push({ role: 'user', content: userText + note });
 
   const trace = [];

@@ -24,13 +24,19 @@ async function check(res, what) {
   throw new SarvamError(`Sarvam ${what} failed (${res.status}): ${msg}`);
 }
 
-export async function transcribe(audio, mimeType = 'audio/webm') {
+// translate: true returns an English translation (saaras:v3 translate mode) instead of the native transcript.
+export async function transcribe(audio, mimeType = 'audio/webm', { translate = false } = {}) {
   const form = new FormData();
-  const ext = mimeType.includes('ogg') ? 'ogg' : mimeType.includes('mp4') ? 'm4a' : mimeType.includes('wav') ? 'wav' : 'webm';
+  const ext = mimeType.includes('ogg') ? 'ogg' : mimeType.includes('mp4') ? 'm4a' : mimeType.includes('wav') ? 'wav' : /mpeg|mp3/.test(mimeType) ? 'mp3' : 'webm';
   form.append('file', new Blob([audio], { type: mimeType.split(';')[0] }), `turn.${ext}`);
-  form.append('model', process.env.SARVAM_STT_MODEL || 'saaras:v4');
+  if (translate) {
+    form.append('model', 'saaras:v3');
+    form.append('mode', 'translate');
+  } else {
+    form.append('model', process.env.SARVAM_STT_MODEL || 'saaras:v4');
+    form.append('keyterms', JSON.stringify(['Mappls', 'MapmyIndia', 'ETA', 'navigation', 'PIN code']));
+  }
   form.append('language_code', 'unknown');
-  form.append('keyterms', JSON.stringify(['Mappls', 'MapmyIndia', 'ETA', 'navigation', 'PIN code']));
   const res = await fetch(`${BASE}/speech-to-text`, {
     method: 'POST',
     headers: { 'api-subscription-key': key() },
