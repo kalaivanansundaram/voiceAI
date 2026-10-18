@@ -119,6 +119,7 @@ export default async function handler(req, res) {
     if (err instanceof IntakeError) return send(res, 400, { error: { code: err.code, message: err.message } });
     if (err instanceof SarvamError) return send(res, 502, { error: { code: 'SARVAM', message: err.message } });
     console.error(err);
+    if (err.expose) return send(res, 503, { error: { code: 'SETUP', message: err.message } });
     return send(res, 500, { error: { code: 'SERVER', message: 'Something went wrong on the server. Your saved progress is safe; try again.' } });
   }
 }

@@ -99,7 +99,13 @@ function supabaseStore(url, key) {
 
   async function call(method, path, body, extra = {}) {
     const res = await fetch(`${base}/${path}`, { method, headers: { ...headers, ...extra }, body: body === undefined ? undefined : JSON.stringify(body) });
-    if (!res.ok) throw new Error(`Supabase ${method} ${path.split('?')[0]} failed (${res.status}): ${(await res.text()).slice(0, 200)}`);
+    if (!res.ok) {
+      const text = await res.text();
+      if (text.includes('PGRST205')) {
+        throw Object.assign(new Error('The Supabase tables are missing. Run supabase/schema.sql in the Supabase SQL Editor once.'), { expose: true });
+      }
+      throw new Error(`Supabase ${method} ${path.split('?')[0]} failed (${res.status}): ${text.slice(0, 200)}`);
+    }
     return res.status === 204 || method !== 'GET' ? null : res.json();
   }
   const eq = (v) => `eq.${encodeURIComponent(v)}`;
