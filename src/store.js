@@ -104,6 +104,9 @@ function supabaseStore(url, key) {
       if (text.includes('PGRST205')) {
         throw Object.assign(new Error('The Supabase tables are missing. Run supabase/schema.sql in the Supabase SQL Editor once.'), { expose: true });
       }
+      if (res.status === 401 || res.status === 403 || text.includes('42501')) {
+        throw Object.assign(new Error(`Supabase rejected the key (${res.status}). SUPABASE_SERVICE_ROLE_KEY must be the service_role / secret key (not anon or publishable), with no quotes or spaces.`), { expose: true });
+      }
       throw new Error(`Supabase ${method} ${path.split('?')[0]} failed (${res.status}): ${text.slice(0, 200)}`);
     }
     return res.status === 204 || method !== 'GET' ? null : res.json();
