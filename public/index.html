@@ -113,8 +113,8 @@
       <p class="hint" id="agentHint"></p>
       <div class="log" id="log" aria-live="polite"></div>
       <div id="voiceControls" class="voicebar">
-        <button class="mic" id="micBtn" aria-label="Tap to talk">Tap to talk</button>
-        <div class="status" id="voiceStatus">Tap, speak, then tap again (or pause) to send.</div>
+        <button class="mic" id="micBtn" aria-label="Start or end the conversation">Start talking</button>
+        <div class="status" id="voiceStatus">Tap once and just talk — it listens, replies, and listens again on its own.</div>
       </div>
       <div id="textControls" class="row hidden" style="margin-top:8px">
         <input id="textInput" type="text" class="grow" placeholder="Type what went wrong…" autocomplete="off">
@@ -183,7 +183,7 @@ function renderHistory() {
     else if (m.role === 'assistant' && m.tool_calls?.length) for (const c of m.tool_calls) add('trace', `→ ${c.function.name}(${c.function.arguments})`);
   }
   if (!messages.length) add('agent', mode === 'voice'
-    ? 'Namaste! Tap the button and tell me what went wrong with Mappls. If you have a resume code, just say it.'
+    ? 'Namaste! Tap Start talking and tell me what went wrong with Mappls — you can say everything at once. Have a resume code? Just say it.'
     : 'Namaste! What went wrong with Mappls? If you have a resume code, type it.');
 }
 $('showTrace').addEventListener('change', () => document.querySelectorAll('.trace').forEach((t) => t.classList.toggle('hidden', !$('showTrace').checked)));
@@ -211,77 +211,137 @@ async function sendText() {
 $('sendBtn').addEventListener('click', sendText);
 $('textInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendText(); });
 
-// ---------- voice mode ----------
-let recorder = null, chunks = [], audioCtx = null, silenceTimer = null, stream = null, player = null;
+// ---------- voice mode: one tap starts a hands-free conversation ----------
+// listening -> (you pause) -> thinking -> speaking -> listening … until you end it.
+// Speaking over the agent interrupts it and starts listening.
+let convo = false, stream = null, audioCtx = null, analyser = null, recorder = null, chunks = [], player = null;
+let phase = 'idle', loopId = 0, noiseFloor = 4;
+const SILENCE_MS = 1100, MAX_UTTERANCE_MS = 45000;
+
 function setBusy(b, status) {
   busy = b;
-  $('micBtn').disabled = b; $('sendBtn').disabled = b;
-  $('voiceStatus').textContent = status || 'Tap, speak, then tap again (or pause) to send.';
+  $('sendBtn').disabled = b;
+  if (status) $('voiceStatus').textContent = status;
 }
-async function startRecording() {
-  if (player) { player.pause(); player = null; }
-  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+function setPhase(p, status) {
+  phase = p;
+  $('micBtn').classList.toggle('rec', p === 'listening');
+  $('micBtn').textContent = convo ? 'End' : 'Start talking';
+  $('voiceStatus').textContent = status || {
+    idle: 'Tap once and just talk — it listens, replies, and listens again on its own.',
+    listening: 'Listening… just pause when you are done.',
+    thinking: 'Thinking…',
+    speaking: 'Speaking… talk over it to interrupt.',
+  }[p];
+}
+function level() {
+  const data = new Uint8Array(analyser.fftSize);
+  analyser.getByteTimeDomainData(data);
+  let sum = 0; for (const v of data) sum += (v - 128) ** 2;
+  return Math.sqrt(sum / data.length);
+}
+
+async function startConversation() {
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
   catch { add('err', 'Microphone permission was blocked. Allow the microphone for this site, or use Text chat.'); return; }
+  audioCtx = new AudioContext();
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 1024;
+  audioCtx.createMediaStreamSource(stream).connect(analyser);
+  // Measure background noise for half a second so the pause detection fits the room.
+  const samples = [];
+  const t0 = performance.now();
+  while (performance.now() - t0 < 500) { samples.push(level()); await new Promise((r) => setTimeout(r, 30)); }
+  noiseFloor = Math.max(2, samples.sort((a, b) => a - b)[Math.floor(samples.length / 2)]);
+  convo = true;
+  listen();
+}
+
+function endConversation() {
+  convo = false; loopId++;
+  if (recorder?.state === 'recording') { recorder.onstop = null; recorder.stop(); }
+  if (player) { player.pause(); player = null; }
+  stream?.getTracks().forEach((t) => t.stop());
+  audioCtx?.close().catch(() => {});
+  stream = audioCtx = analyser = recorder = null;
+  setBusy(false);
+  setPhase('idle');
+}
+
+function listen() {
+  if (!convo) return;
+  const id = ++loopId;
   const type = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'].find((t) => window.MediaRecorder?.isTypeSupported?.(t)) || '';
   recorder = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
   chunks = [];
   recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-  recorder.onstop = sendRecording;
-  recorder.start();
-  $('micBtn').classList.add('rec'); $('micBtn').textContent = 'Listening'; $('voiceStatus').textContent = 'Listening… tap to send, or just pause.';
-  watchSilence();
+  recorder.onstop = () => id === loopId && send(recorder.mimeType);
+  recorder.start(250);
+  setPhase('listening');
+  const speechLevel = Math.max(6, noiseFloor * 2.5);
+  let spokeFor = 0, quietSince = 0, last = performance.now();
+  const started = last;
+  const tick = () => {
+    if (id !== loopId || recorder?.state !== 'recording') return;
+    const t = performance.now(), dt = t - last; last = t;
+    if (level() > speechLevel) { spokeFor += dt; quietSince = 0; } else if (!quietSince) quietSince = t;
+    const spoke = spokeFor > 250;
+    if ((spoke && quietSince && t - quietSince > SILENCE_MS) || t - started > MAX_UTTERANCE_MS) return recorder.stop();
+    // Nothing said for 20 s: restart the recording so it does not grow forever.
+    if (!spoke && t - started > 20000) { recorder.onstop = null; recorder.stop(); return listen(); }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
 }
-function watchSilence() {
-  try {
-    audioCtx = new AudioContext();
-    const analyser = audioCtx.createAnalyser();
-    audioCtx.createMediaStreamSource(stream).connect(analyser);
-    const data = new Uint8Array(analyser.fftSize);
-    let spoke = false, quietSince = performance.now();
-    const started = performance.now();
-    const tick = () => {
-      if (!recorder || recorder.state !== 'recording') return;
-      analyser.getByteTimeDomainData(data);
-      let peak = 0; for (const v of data) peak = Math.max(peak, Math.abs(v - 128));
-      const t = performance.now();
-      if (peak > 12) { spoke = true; quietSince = t; }
-      if ((spoke && t - quietSince > 1500) || t - started > 60000) return stopRecording();
-      silenceTimer = requestAnimationFrame(tick);
-    };
-    tick();
-  } catch { /* manual stop still works */ }
-}
-function stopRecording() {
-  cancelAnimationFrame(silenceTimer);
-  if (recorder && recorder.state === 'recording') recorder.stop();
-  stream?.getTracks().forEach((t) => t.stop());
-  audioCtx?.close().catch(() => {});
-  $('micBtn').classList.remove('rec'); $('micBtn').textContent = 'Tap to talk';
-}
-async function sendRecording() {
-  const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
-  recorder = null;
-  if (blob.size < 2000) { setBusy(false, 'Did not catch that — tap and try again.'); return; }
-  setBusy(true, 'Transcribing and thinking…');
+
+async function send(mimeType) {
+  const blob = new Blob(chunks, { type: mimeType || 'audio/webm' });
+  if (blob.size < 2000) return listen();
+  const id = loopId;
+  setPhase('thinking');
+  setBusy(true);
   try {
     const b64 = await new Promise((ok, fail) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1]); r.onerror = fail; r.readAsDataURL(blob); });
     const r = await api('/api/agent/voice', { messages, audio_base64: b64, mime: blob.type });
+    if (id !== loopId || !convo) return;
     if (r.heard?.transcript) add('user', r.heard.transcript);
     afterTurn(r);
-    if (r.speech?.audio_base64) {
-      player = new Audio(`data:${r.speech.mime};base64,${r.speech.audio_base64}`);
-      setBusy(false, 'Speaking… tap to interrupt and answer.');
-      player.onended = () => setBusy(false);
-      player.play().catch(() => setBusy(false));
-      return;
-    }
-  } catch (e) { add('err', e.message); }
-  setBusy(false);
+    if (r.timing) add('trace', `timing: ${Object.entries(r.timing).map(([k, v]) => `${k.replace('_ms', '')} ${(v / 1000).toFixed(1)}s`).join(', ')}`);
+    setBusy(false);
+    if (r.speech?.audio_base64) return speakThenListen(`data:${r.speech.mime};base64,${r.speech.audio_base64}`);
+  } catch (e) {
+    add('err', e.message);
+    setBusy(false);
+  }
+  listen();
 }
-$('micBtn').addEventListener('click', () => (recorder ? stopRecording() : startRecording()));
+
+function speakThenListen(src) {
+  const id = ++loopId;
+  player = new Audio(src);
+  setPhase('speaking');
+  const done = () => { if (id === loopId) { player = null; listen(); } };
+  player.onended = done;
+  player.onerror = done;
+  player.play().catch(done);
+  // Barge-in: clearly louder than the room for a moment means the person is talking over the reply.
+  const bargeLevel = Math.max(14, noiseFloor * 5);
+  let loudFor = 0, last = performance.now();
+  const tick = () => {
+    if (id !== loopId || !player) return;
+    const t = performance.now(), dt = t - last; last = t;
+    loudFor = level() > bargeLevel ? loudFor + dt : 0;
+    if (loudFor > 350) { player.pause(); player = null; return listen(); }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+$('micBtn').addEventListener('click', () => (convo ? endConversation() : startConversation()));
 
 $('newBtn').addEventListener('click', () => {
   if (!confirm('Start a new conversation? A saved intake stays saved — you can return to it with its resume code.')) return;
+  if (convo) endConversation();
   messages = []; sessionId = null; store.del('messages'); store.del('sessionId');
   renderHistory(); refreshBrief(); if (mode === 'guided') renderGuided();
 });
@@ -314,19 +374,27 @@ async function renderGuided() {
   if (!guided || guided.session_id !== sessionId) { try { guided = await api('/api/tools/get_status', { session_id: sessionId }); } catch (e) { sessionId = null; store.del('sessionId'); return renderGuided(); } }
   const n = guided.next;
   box.append(el(`<p class="hint">Progress ${guided.progress} · resume code <span class="code">${esc(guided.resume_code)}</span></p>`));
-  if (n.type === 'ask' || n.type === 'confirm') {
-    const isCat = n.field === 'category';
-    const input = isCat
-      ? `<select id="gVal">${Object.entries(config.categories).map(([k, l]) => `<option value="${k}" ${n.suggestion === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`
-      : `<textarea id="gVal">${n.type === 'confirm' ? esc(n.suggestion) : ''}</textarea>`;
-    box.append(el(`<div><div class="guided-q">${esc(n.question)}</div>${input}
-      <div class="row" style="margin-top:8px">
-        ${n.type === 'confirm' ? '<button class="btn primary" id="gConfirm">Yes, that is right</button><button class="btn" id="gSave">Save my edit</button>' : '<button class="btn primary" id="gSave">Save answer</button>'}
-        <button class="btn" id="gUnknown">I don't know</button><button class="btn" id="gPause">Pause</button>
-      </div></div>`));
-    if ($('gConfirm')) $('gConfirm').onclick = () => guidedCall('confirm_suggestion', { session_id: sessionId, field: n.field });
-    $('gSave').onclick = () => guidedCall('save_answer', { session_id: sessionId, field: n.field, value: $('gVal').value });
-    $('gUnknown').onclick = () => guidedCall('mark_unknown', { session_id: sessionId, field: n.field, reason: 'person does not know' });
+  if (n.type === 'ask') {
+    const inputs = n.fields.map((key) => {
+      const f = config.fields.find((x) => x.key === key);
+      const control = key === 'category'
+        ? `<select data-g="${key}"><option value="">Choose…</option>${Object.entries(config.categories).map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('')}</select>`
+        : `<textarea data-g="${key}" style="min-height:60px"></textarea>`;
+      return `<label class="hint" style="display:block;margin:8px 0 4px">${esc(f.label)} <span style="float:right"><input type="checkbox" data-u="${key}"> don't know</span></label>${control}`;
+    }).join('');
+    box.append(el(`<div><div class="guided-q">${esc(n.question)}</div>${inputs}
+      <div class="row" style="margin-top:10px"><button class="btn primary" id="gSave">Save</button><button class="btn" id="gPause">Pause</button></div></div>`));
+    $('gSave').onclick = async () => {
+      const answers = [], unknown = [];
+      for (const key of n.fields) {
+        if (box.querySelector(`[data-u="${key}"]`).checked) unknown.push(key);
+        else if (box.querySelector(`[data-g="${key}"]`).value.trim()) answers.push({ field: key, value: box.querySelector(`[data-g="${key}"]`).value });
+      }
+      if (!answers.length && !unknown.length) return guidedError('Answer at least one, or tick "don\'t know".');
+      for (const key of unknown) await api('/api/tools/mark_unknown', { session_id: sessionId, field: key, reason: 'person does not know' }).catch((e) => guidedError(e.message));
+      if (answers.length) await guidedCall('save_answers', { session_id: sessionId, answers });
+      else await guidedCall('get_status', { session_id: sessionId });
+    };
     $('gPause').onclick = () => guidedCall('pause_intake', { session_id: sessionId });
   } else if (n.type === 'paused') {
     box.append(el(`<div class="banner warn">Paused. Your progress is saved. Resume code: <span class="code">${esc(guided.resume_code)}</span></div>`));
@@ -335,7 +403,7 @@ async function renderGuided() {
   } else if (n.type === 'review') {
     const p = await api('/api/tools/get_preview', { session_id: sessionId });
     box.append(el(`<div><div class="guided-q">Check the brief on the right. Approve, change something, or cancel?</div>
-      <p class="hint">Use "Change" next to any field to revise it. Approving version ${p.version} only saves the brief — nothing is sent.</p>
+      <p class="hint">Use "Change" next to any field to revise it.${n.to_confirm?.length ? ` Items marked <b>suggested</b> are guesses — approving confirms them.` : ''} Approving version ${p.version} only saves the brief — nothing is sent.</p>
       <div class="row"><button class="btn primary" id="gApprove">Approve version ${p.version}</button><button class="btn danger" id="gCancel">Cancel</button><button class="btn" id="gPause">Pause</button></div></div>`));
     $('gApprove').onclick = () => guidedCall('finalize_intake', { session_id: sessionId, decision: 'approve', preview_version: p.version });
     $('gCancel').onclick = () => confirm('Cancel this intake? Nothing will be saved for the team.') && guidedCall('finalize_intake', { session_id: sessionId, decision: 'cancel', preview_version: p.version });
@@ -350,7 +418,7 @@ function changeField(field) {
   const value = field === 'category'
     ? prompt(`New problem type — one of:\n${Object.keys(config.categories).join(', ')}`)
     : prompt(`Change "${f.label}" to:`);
-  if (value) guidedCall('save_answer', { session_id: sessionId, field, value });
+  if (value) guidedCall('save_answers', { session_id: sessionId, answers: [{ field, value }] });
 }
 
 // ---------- live brief ----------
@@ -384,6 +452,7 @@ async function refreshBrief() {
 
 // ---------- mode switching ----------
 function setMode(m) {
+  if (m !== 'voice' && convo) endConversation();
   mode = m; store.set('mode', m);
   document.querySelectorAll('.tab').forEach((t) => t.setAttribute('aria-selected', String(t.dataset.mode === m)));
   const agentMode = m !== 'guided';

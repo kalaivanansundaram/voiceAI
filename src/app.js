@@ -7,7 +7,7 @@
 //   GET  /api/brief/:session_id    live brief + change history for the side panel
 
 import { timingSafeEqual, createHash } from 'node:crypto';
-import { openStore } from './store.js';
+import { openStore, cachedStore } from './store.js';
 import { createIntake, IntakeError } from './intake.js';
 import { agentTurn } from './agent.js';
 import { transcribe, speak, sarvamConfigured, SarvamError } from './sarvam.js';
@@ -17,7 +17,7 @@ import { FIELDS, CATEGORIES } from './fields.js';
 let intakePromise;
 const getIntake = () =>
   (intakePromise ??= openStore()
-    .then((store) => ({ store, intake: createIntake(store) }))
+    .then((store) => ({ store }))
     .catch((err) => {
       intakePromise = null; // retry on the next request instead of caching the failure
       throw new IntakeError('STORE', err.message);
@@ -93,7 +93,7 @@ export default async function handler(req, res) {
         sarvam: sarvamConfigured(),
         store: store.kind,
         access_required: Boolean(process.env.ACCESS_CODE),
-        fields: FIELDS.map(({ key, label, question }) => ({ key, label, question })),
+        fields: FIELDS.map(({ key, label, group }) => ({ key, label, group })),
         categories: Object.fromEntries(Object.entries(CATEGORIES).map(([k, v]) => [k, v.label])),
       });
     }
@@ -103,7 +103,8 @@ export default async function handler(req, res) {
     // Setup check: non-secret facts about the Supabase settings, to compare with a working .env.
     if (req.method === 'GET' && path === '/api/diag') return send(res, 200, supabaseFingerprint());
 
-    const { intake } = await getIntake();
+    // A fresh request-scoped cache per turn: never stale across requests or serverless instances.
+    const intake = createIntake(cachedStore((await getIntake()).store));
 
     let m = path.match(/^\/api\/tools\/([a-z_]+)$/);
     if (req.method === 'POST' && m) {
@@ -119,25 +120,37 @@ export default async function handler(req, res) {
 
     if (req.method === 'POST' && path === '/api/agent/text') {
       const body = await readJson(req);
-      return send(res, 200, await agentTurn(intake, { messages: body.messages, text: body.text }));
+      const t = Date.now();
+      const turn = await agentTurn(intake, { messages: body.messages, text: body.text });
+      return send(res, 200, { ...turn, timing: { agent_ms: Date.now() - t } });
     }
 
     if (req.method === 'POST' && path === '/api/agent/voice') {
       const body = await readJson(req);
       const audio = Buffer.from(String(body.audio_base64 ?? ''), 'base64');
       if (audio.length < 1000) throw new IntakeError('EMPTY', 'Nothing was recorded. Hold the button a little longer.');
-      const heard = await transcribe(audio, String(body.mime || 'audio/webm'));
+      const mime = String(body.mime || 'audio/webm');
+      const timing = {};
+      let t = Date.now();
+      // Transcript and English translation in parallel; the translation is used only for non-English
+      // speech, so tool arguments (the brief) stay in English without an extra round trip.
+      const [heard, translated] = await Promise.all([
+        transcribe(audio, mime),
+        transcribe(audio, mime, { translate: true }).catch(() => null),
+      ]);
+      timing.stt_ms = Date.now() - t;
       if (!heard.transcript.trim()) {
         const reply = 'Sorry, I could not hear that clearly. Could you say it again?';
-        return send(res, 200, { heard, reply, messages: body.messages ?? [], trace: [], session_id: null, speech: await speak(reply, 'en-IN') });
+        return send(res, 200, { heard, reply, messages: body.messages ?? [], trace: [], session_id: null, speech: await speak(reply, 'en-IN'), timing });
       }
-      // Non-English speech: also get an English translation so tool arguments (the brief) stay in English.
-      if (heard.language_code && heard.language_code !== 'en-IN') {
-        heard.english = (await transcribe(audio, String(body.mime || 'audio/webm'), { translate: true }).catch(() => null))?.transcript || null;
-      }
+      if (heard.language_code && heard.language_code !== 'en-IN') heard.english = translated?.transcript || null;
+      t = Date.now();
       const turn = await agentTurn(intake, { messages: body.messages, text: heard.transcript, english: heard.english, language_code: heard.language_code });
+      timing.agent_ms = Date.now() - t;
+      t = Date.now();
       const speech = await speak(turn.reply, heard.language_code);
-      return send(res, 200, { heard, ...turn, speech });
+      timing.tts_ms = Date.now() - t;
+      return send(res, 200, { heard, ...turn, speech, timing });
     }
 
     return send(res, 404, { error: { code: 'NOT_FOUND', message: 'No such route.' } });

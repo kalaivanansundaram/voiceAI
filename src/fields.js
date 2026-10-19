@@ -1,6 +1,8 @@
-// What the Mappls problem intake collects, in the order it is asked.
+// What the Mappls problem intake collects. Fields are asked in small groups so
+// one natural answer can fill several of them — a few turns instead of ten.
 // Each field ends as "answered" (the person said or confirmed it) or "unknown"
-// (a visible gap). Nothing is ever filled in silently.
+// (a visible gap). Guesses stay "suggested" until the person approves the
+// read-back. Nothing is ever filled in silently.
 
 export const CATEGORIES = {
   map_data: {
@@ -38,57 +40,25 @@ export const CATEGORIES = {
   other: { label: 'Something else', route_to: 'Feedback team triage' },
 };
 
+// `ask` is a short clause; a group's clauses are joined into one spoken question.
 export const FIELDS = [
-  {
-    key: 'reporter',
-    label: 'Who is reporting',
-    question: 'First, how do you use Mappls — daily commute, driving for work, a fleet, or a business?',
-  },
-  {
-    key: 'problem',
-    label: 'Problem in their words',
-    question: 'In your own words, what went wrong?',
-  },
-  {
-    key: 'category',
-    label: 'Problem type',
-    question: 'Which of these is it closest to: map data, navigation and routes, traffic and ETA, search, a business listing, app behaviour, a GPS tracker device, or account and payment?',
-  },
-  {
-    key: 'location',
-    label: 'Where',
-    question: 'Where did this happen? A locality, landmark, or the route from and to is enough — no need for your home address.',
-  },
-  {
-    key: 'when',
-    label: 'When and how often',
-    question: 'When did it happen, and how often does it happen?',
-  },
-  {
-    key: 'what_happened',
-    label: 'What they saw',
-    question: 'Walk me through it: what did you do in the app, and what exactly did you see?',
-  },
-  {
-    key: 'expected',
-    label: 'What they expected',
-    question: 'What did you expect the app to show or do instead?',
-  },
-  {
-    key: 'impact',
-    label: 'Impact',
-    question: 'How did it affect you — time lost, extra distance, a missed delivery, or something else?',
-  },
-  {
-    key: 'tried',
-    label: 'What they tried',
-    question: 'Did you try anything — re-routing, restarting the app, another app? What happened?',
-  },
-  {
-    key: 'device',
-    label: 'Phone and app version',
-    question: 'Last one: which phone are you using, and the Mappls app version if you know it? It is fine to say you do not know.',
-  },
+  { key: 'problem', group: 'opening', label: 'Problem in their words', ask: 'what went wrong with Mappls' },
+  { key: 'location', group: 'story', label: 'Where', ask: 'where it happened (a locality or route is enough)' },
+  { key: 'when', group: 'story', label: 'When and how often', ask: 'when it happened and how often' },
+  { key: 'what_happened', group: 'story', label: 'What they saw', ask: 'what exactly you did and saw in the app' },
+  { key: 'category', group: 'story', label: 'Problem type', ask: 'whether it is about the map, a route, traffic, search, a business listing, the app itself, a tracker device or your account' },
+  { key: 'expected', group: 'outcome', label: 'What they expected', ask: 'what you expected the app to do instead' },
+  { key: 'impact', group: 'outcome', label: 'Impact', ask: 'how it affected you' },
+  { key: 'tried', group: 'context', label: 'What they tried', ask: 'whether you tried anything to get around it' },
+  { key: 'reporter', group: 'context', label: 'Who is reporting', ask: 'how you usually use Mappls (commute, work driving, fleet or business)' },
+  { key: 'device', group: 'context', label: 'Phone and app version', ask: 'your phone and app version, if you know' },
+];
+
+export const GROUPS = [
+  { key: 'opening', lead: 'In your own words, tell me' },
+  { key: 'story', lead: 'Tell me what happened:' },
+  { key: 'outcome', lead: 'Got it. And' },
+  { key: 'context', lead: 'Last bit:' },
 ];
 
 export const FIELD_KEYS = FIELDS.map((f) => f.key);
@@ -98,3 +68,9 @@ export const FIELD_BY_KEY = Object.fromEntries(FIELDS.map((f) => [f.key, f]));
 // claim       = reported by others, or a generalisation ("always", "everyone")
 // assumption  = a guess about cause or fix ("probably the map is outdated")
 export const STATEMENT_KINDS = ['observation', 'claim', 'assumption'];
+
+export function groupQuestion(group, fieldKeys) {
+  const asks = fieldKeys.map((k) => FIELD_BY_KEY[k].ask);
+  const list = asks.length === 1 ? asks[0] : `${asks.slice(0, -1).join(', ')} and ${asks.at(-1)}`;
+  return `${group.lead} ${list}.`;
+}

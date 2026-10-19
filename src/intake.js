@@ -3,7 +3,7 @@
 // remember progress itself.
 
 import { randomUUID, randomInt } from 'node:crypto';
-import { FIELDS, FIELD_KEYS, FIELD_BY_KEY, CATEGORIES, STATEMENT_KINDS } from './fields.js';
+import { FIELDS, FIELD_KEYS, FIELD_BY_KEY, CATEGORIES, STATEMENT_KINDS, GROUPS, groupQuestion } from './fields.js';
 import { classifyStatements, guessCategory } from './classify.js';
 import { readStartingInput, InputError } from './reader.js';
 
@@ -16,6 +16,7 @@ export class IntakeError extends Error {
 
 const now = () => new Date().toISOString();
 const LOCKED = new Set(['approved', 'cancelled']);
+const DONE = new Set(['answered', 'unknown']);
 
 export function createIntake(store) {
   const log = (session_id, type, payload) => store.logEvent({ session_id, type, payload: JSON.stringify(payload ?? {}), at: now() });
@@ -39,7 +40,7 @@ export function createIntake(store) {
 
   function normaliseValue(field, value) {
     const v = String(value ?? '').trim();
-    if (!v) throw new IntakeError('EMPTY', 'The answer is empty. Ask the question again, or use mark_unknown if they do not know.');
+    if (!v) throw new IntakeError('EMPTY', `The answer for ${field} is empty. Ask again, or use mark_unknown if they do not know.`);
     if (field === 'category' && !CATEGORIES[v]) {
       throw new IntakeError('BAD_CATEGORY', `category must be one of: ${Object.keys(CATEGORIES).join(', ')}.`);
     }
@@ -50,74 +51,80 @@ export function createIntake(store) {
     return Object.fromEntries((await store.getAnswers(sessionId)).map((a) => [a.field, a]));
   }
 
-  async function setAnswer(s, field, value, status, basis) {
-    await store.updateAnswer(s.id, field, { value, status, basis: basis ?? null, updated_at: now() });
-  }
-
-  // Every content change bumps the version, so an approval always matches the exact preview read aloud.
-  async function bump(s) {
-    s.version += 1;
-    await store.updateSession(s.id, { version: s.version, updated_at: now() });
-  }
-
   // The single source of truth for "what should the agent say next".
+  // Missing fields are asked a group at a time; suggested fields do not block —
+  // they are read back for confirmation in the final review.
   function nextStep(s, answers) {
     if (s.status === 'paused') return { type: 'paused', say: `Your progress is saved. Your resume code is ${s.resume_code.split('').join(' ')}.` };
     if (s.status === 'approved') return { type: 'done', say: 'The brief is approved and saved for the Mappls team. Nothing else was sent.' };
     if (s.status === 'cancelled') return { type: 'done', say: 'The intake was cancelled. Nothing was sent.' };
-    for (const f of FIELDS) {
-      const a = answers[f.key];
-      if (a.status === 'missing') return { type: 'ask', field: f.key, question: f.question };
-      if (a.status === 'suggested') {
-        const shown = f.key === 'category' ? CATEGORIES[a.value].label : a.value;
-        return {
-          type: 'confirm',
-          field: f.key,
-          suggestion: a.value,
-          question: `From what you said, I have noted ${f.label.toLowerCase()} as: "${shown}". Is that right, or would you like to change it?`,
-        };
-      }
+    for (const g of GROUPS) {
+      const missing = FIELDS.filter((f) => f.group === g.key && answers[f.key].status === 'missing').map((f) => f.key);
+      if (missing.length) return { type: 'ask', fields: missing, question: groupQuestion(g, missing) };
     }
-    return { type: 'review', say: 'All questions are covered. Call get_preview, read it back, and ask: approve, change something, or cancel?' };
+    const toConfirm = FIELDS.filter((f) => answers[f.key].status === 'suggested').map((f) => f.key);
+    return {
+      type: 'review',
+      to_confirm: toConfirm,
+      say: 'All questions are covered. Call get_preview, read it back briefly (point out any guessed items in to_confirm), and ask: approve, change something, or cancel?',
+    };
   }
 
   function progress(answers) {
-    const done = FIELDS.filter((f) => ['answered', 'unknown'].includes(answers[f.key].status)).length;
+    const done = FIELDS.filter((f) => DONE.has(answers[f.key].status)).length;
     return `${done}/${FIELDS.length}`;
   }
 
   function snapshot(s, answers) {
-    return {
-      session_id: s.id,
-      resume_code: s.resume_code,
-      status: s.status,
-      version: s.version,
-      progress: progress(answers),
-      next: nextStep(s, answers),
-    };
+    return { session_id: s.id, resume_code: s.resume_code, status: s.status, version: s.version, progress: progress(answers), next: nextStep(s, answers) };
   }
 
   // After any change: move between intake and review depending on whether gaps remain.
-  async function settle(s) {
-    const answers = await answerMap(s.id);
+  async function settle(s, answers, writes) {
     const step = nextStep(s, answers);
     let status = s.status;
     if (status === 'intake' && step.type === 'review') status = 'review';
     if (status === 'review' && step.type !== 'review') status = 'intake';
-    if (status !== s.status) {
-      s.status = status;
-      await store.updateSession(s.id, { status, updated_at: now() });
-    }
+    s.status = status;
+    s.version += 1;
+    writes.push(store.updateSession(s.id, { status, version: s.version, updated_at: now() }));
+    await Promise.all(writes);
     return snapshot(s, answers);
   }
 
-  async function replaceStatements(s, field, value, statements) {
-    await store.supersedeStatements(s.id, field);
-    const list = (Array.isArray(statements) && statements.length ? statements : classifyStatements(value))
+  function labelStatements(value, statements) {
+    return (Array.isArray(statements) && statements.length ? statements : classifyStatements(value))
       .filter((st) => st && String(st.text ?? '').trim())
       .map((st) => ({ text: String(st.text).trim().slice(0, 500), kind: STATEMENT_KINDS.includes(st.kind) ? st.kind : 'claim' }));
-    await store.insertStatements(list.map((st) => ({ session_id: s.id, field, ...st })));
-    return list;
+  }
+
+  // Replace a field's statements: supersede the old ones, then add the new ones.
+  const replaceStatements = (s, field, list) =>
+    store.supersedeStatements(s.id, field).then(() => store.insertStatements(list.map((st) => ({ session_id: s.id, field, ...st }))));
+
+  function setAnswer(s, answers, field, value, status, basis) {
+    const row = { value, status, basis: basis ?? null, updated_at: now() };
+    answers[field] = { ...answers[field], ...row };
+    return store.updateAnswer(s.id, field, row);
+  }
+
+  async function saveMany(session_id, items) {
+    if (!Array.isArray(items) || !items.length) throw new IntakeError('EMPTY', 'No answers to save.');
+    const s = await writable(session_id);
+    const answers = await answerMap(s.id);
+    const writes = [];
+    const saved = [];
+    for (const item of items) {
+      checkField(item?.field);
+      const v = normaliseValue(item.field, item.value);
+      const previous = answers[item.field];
+      writes.push(setAnswer(s, answers, item.field, v, 'answered', null));
+      const labelled = item.field === 'category' ? [] : labelStatements(v, item.statements);
+      if (item.field !== 'category') writes.push(replaceStatements(s, item.field, labelled));
+      writes.push(log(s.id, previous.status === 'answered' ? 'revised' : 'answered', { field: item.field, from: previous.value, to: v }));
+      saved.push({ field: item.field, value: v, statements: labelled });
+    }
+    return { ...(await settle(s, answers, writes)), saved };
   }
 
   return {
@@ -136,20 +143,22 @@ export function createIntake(store) {
       await store.createSession(s);
       s.version = 1;
 
-      // Organise: what the starting input already tells us becomes a suggestion
-      // the person must confirm. Everything else stays visibly missing.
+      // Organise: the person's own words are their answer to "what went wrong";
+      // text read from a link, and the guessed problem type, are only suggestions.
       const problem = read.text.length > 400 ? `${read.text.slice(0, 400)}…` : read.text;
       const cat = guessCategory(read.text);
-      await store.insertAnswers(FIELD_KEYS.map((field) => {
-        if (field === 'problem') return { session_id: s.id, field, value: problem, status: 'suggested', basis: 'from starting input', updated_at: t };
-        if (field === 'category' && cat) return { session_id: s.id, field, value: cat, status: 'suggested', basis: 'keyword match on starting input', updated_at: t };
-        return { session_id: s.id, field, value: null, status: 'missing', basis: null, updated_at: t };
-      }));
-      const suggestions = cat ? ['problem', 'category'] : ['problem'];
-      await log(s.id, 'started', { source_url: read.source_url, suggestions });
+      const rows = FIELD_KEYS.map((field) => ({ session_id: s.id, field, value: null, status: 'missing', basis: null, updated_at: t }));
+      const answers = Object.fromEntries(rows.map((r) => [r.field, r]));
+      Object.assign(answers.problem, read.source_url
+        ? { value: problem, status: 'suggested', basis: `read from ${read.source_url}` }
+        : { value: problem, status: 'answered', basis: 'their opening words' });
+      if (cat) Object.assign(answers.category, { value: cat, status: 'suggested', basis: 'keyword match on their words' });
+      const writes = [store.insertAnswers(rows), log(s.id, 'started', { source_url: read.source_url, category_guess: cat })];
+      if (!read.source_url) writes.push(writes[0].then(() => replaceStatements(s, 'problem', labelStatements(problem))));
+      const known = FIELD_KEYS.filter((k) => answers[k].status !== 'missing');
       return {
-        ...(await settle(s)),
-        organised: { known_from_input: suggestions, missing: FIELD_KEYS.filter((k) => !suggestions.includes(k)) },
+        ...(await settle(s, answers, writes)),
+        organised: { known_from_input: known, missing: FIELD_KEYS.filter((k) => !known.includes(k)) },
         source_url: read.source_url,
       };
     },
@@ -162,57 +171,56 @@ export function createIntake(store) {
     async suggest_answer({ session_id, field, value, basis }) {
       checkField(field);
       const s = await writable(session_id);
-      const current = (await answerMap(s.id))[field];
-      if (current.status === 'answered') {
-        throw new IntakeError('ALREADY_ANSWERED', 'The person already answered this. Use save_answer only if they ask to change it.');
+      const answers = await answerMap(s.id);
+      if (answers[field].status === 'answered') {
+        throw new IntakeError('ALREADY_ANSWERED', 'The person already answered this. Use save_answers only if they ask to change it.');
       }
-      await setAnswer(s, field, normaliseValue(field, value), 'suggested', String(basis ?? '').slice(0, 300) || null);
-      await bump(s);
-      await log(s.id, 'suggested', { field, value, basis });
-      return settle(s);
+      const writes = [
+        setAnswer(s, answers, field, normaliseValue(field, value), 'suggested', String(basis ?? '').slice(0, 300) || null),
+        log(s.id, 'suggested', { field, value, basis }),
+      ];
+      return settle(s, answers, writes);
+    },
+
+    // Several fields from one natural answer, in one call.
+    async save_answers({ session_id, answers }) {
+      return saveMany(session_id, answers);
     },
 
     async save_answer({ session_id, field, value, statements }) {
-      checkField(field);
-      const s = await writable(session_id);
-      const v = normaliseValue(field, value);
-      const previous = (await answerMap(s.id))[field];
-      await setAnswer(s, field, v, 'answered', null);
-      const labelled = field === 'category' ? [] : await replaceStatements(s, field, v, statements);
-      await bump(s);
-      await log(s.id, previous.status === 'answered' ? 'revised' : 'answered', { field, from: previous.value, to: v });
-      return { ...(await settle(s)), saved: { field, value: v, statements: labelled } };
+      const r = await saveMany(session_id, [{ field, value, statements }]);
+      return { ...r, saved: r.saved[0] };
     },
 
-    // Only acts on a pending suggestion, so "confirm" said twice never skips a question.
+    // Only acts on a pending suggestion, so "confirm" said twice never skips anything.
     async confirm_suggestion({ session_id, field }) {
       checkField(field);
       const s = await writable(session_id);
-      const a = (await answerMap(s.id))[field];
+      const answers = await answerMap(s.id);
+      const a = answers[field];
       if (a.status !== 'suggested') {
-        return { ...snapshot(s, await answerMap(s.id)), note: `Nothing to confirm for ${field} (status: ${a.status}). Follow "next".` };
+        return { ...snapshot(s, answers), note: `Nothing to confirm for ${field} (status: ${a.status}). Follow "next".` };
       }
-      await setAnswer(s, field, a.value, 'answered', a.basis);
-      if (field !== 'category') await replaceStatements(s, field, a.value);
-      await bump(s);
-      await log(s.id, 'confirmed', { field, value: a.value });
-      return settle(s);
+      const writes = [setAnswer(s, answers, field, a.value, 'answered', a.basis), log(s.id, 'confirmed', { field, value: a.value })];
+      if (field !== 'category') writes.push(replaceStatements(s, field, labelStatements(a.value)));
+      return settle(s, answers, writes);
     },
 
     async mark_unknown({ session_id, field, reason }) {
       checkField(field);
       const s = await writable(session_id);
-      await setAnswer(s, field, null, 'unknown', String(reason || 'person does not know').slice(0, 300));
-      await store.supersedeStatements(s.id, field);
-      await bump(s);
-      await log(s.id, 'unknown', { field, reason });
-      return settle(s);
+      const answers = await answerMap(s.id);
+      const writes = [
+        setAnswer(s, answers, field, null, 'unknown', String(reason || 'person does not know').slice(0, 300)),
+        store.supersedeStatements(s.id, field),
+        log(s.id, 'unknown', { field, reason }),
+      ];
+      return settle(s, answers, writes);
     },
 
     async pause_intake({ session_id }) {
       const s = await writable(session_id);
-      await store.updateSession(s.id, { status: 'paused', paused_from: s.status, updated_at: now() });
-      await log(s.id, 'paused', {});
+      await Promise.all([store.updateSession(s.id, { status: 'paused', paused_from: s.status, updated_at: now() }), log(s.id, 'paused', {})]);
       return snapshot({ ...s, status: 'paused' }, await answerMap(s.id));
     },
 
@@ -223,17 +231,15 @@ export function createIntake(store) {
       if (!s) throw new IntakeError('NOT_FOUND', 'That resume code was not found. Ask the person to read it again, or start a new intake.');
       if (s.status === 'paused') {
         s.status = s.paused_from || 'intake';
-        await store.updateSession(s.id, { status: s.status, paused_from: null, updated_at: now() });
-        await log(s.id, 'resumed', {});
+        await Promise.all([store.updateSession(s.id, { status: s.status, paused_from: null, updated_at: now() }), log(s.id, 'resumed', {})]);
       }
       return snapshot(s, await answerMap(s.id));
     },
 
     async get_preview({ session_id }) {
       const s = await load(session_id);
-      const answers = await answerMap(s.id);
-      const statements = await store.getStatements(s.id);
-      const pending = FIELDS.filter((f) => ['missing', 'suggested'].includes(answers[f.key].status)).map((f) => f.key);
+      const [answers, statements] = await Promise.all([answerMap(s.id), store.getStatements(s.id)]);
+      const pending = FIELDS.filter((f) => answers[f.key].status === 'missing').map((f) => f.key);
       return {
         ...snapshot(s, answers),
         ready_to_approve: pending.length === 0 && s.status === 'review',
@@ -243,21 +249,27 @@ export function createIntake(store) {
       };
     },
 
+    // Approving the exact read-back also confirms the suggested items it contained.
     async finalize_intake({ session_id, decision, preview_version }) {
       const s = await writable(session_id);
       if (decision === 'cancel') {
-        await store.updateSession(s.id, { status: 'cancelled', updated_at: now() });
-        await log(s.id, 'cancelled', {});
+        await Promise.all([store.updateSession(s.id, { status: 'cancelled', updated_at: now() }), log(s.id, 'cancelled', {})]);
         return snapshot({ ...s, status: 'cancelled' }, await answerMap(s.id));
       }
-      if (decision !== 'approve') throw new IntakeError('BAD_DECISION', 'decision must be "approve" or "cancel". To revise, call save_answer.');
+      if (decision !== 'approve') throw new IntakeError('BAD_DECISION', 'decision must be "approve" or "cancel". To revise, call save_answers.');
       if (s.status !== 'review') throw new IntakeError('NOT_READY', 'Some questions are still open. Finish them (or mark them unknown) first.');
       if (Number(preview_version) !== s.version) {
         throw new IntakeError('STALE_PREVIEW', `The brief changed since that preview (now version ${s.version}). Call get_preview and read it back again before approving.`);
       }
-      await store.updateSession(s.id, { status: 'approved', approved_version: s.version, updated_at: now() });
-      await log(s.id, 'approved', { version: s.version });
-      return { ...snapshot({ ...s, status: 'approved' }, await answerMap(s.id)), approved_version: s.version };
+      const answers = await answerMap(s.id);
+      const confirmed = FIELDS.filter((f) => answers[f.key].status === 'suggested').map((f) => f.key);
+      await Promise.all([
+        ...confirmed.map((field) => setAnswer(s, answers, field, answers[field].value, 'answered', answers[field].basis)),
+        ...confirmed.filter((f) => f !== 'category').map((field) => replaceStatements(s, field, labelStatements(answers[field].value))),
+        store.updateSession(s.id, { status: 'approved', approved_version: s.version, updated_at: now() }),
+        log(s.id, 'approved', { version: s.version, confirmed_on_approval: confirmed }),
+      ]);
+      return { ...snapshot({ ...s, status: 'approved' }, answers), approved_version: s.version, confirmed_on_approval: confirmed };
     },
 
     // For the UI; not offered to the agent.
@@ -269,7 +281,7 @@ export function createIntake(store) {
 }
 
 function buildBrief(s, answers, statements) {
-  const cat = answers.category.status === 'answered' ? answers.category.value : null;
+  const cat = answers.category.value && CATEGORIES[answers.category.value] ? answers.category.value : null;
   const by = (kind) => statements.filter((st) => st.kind === kind).map((st) => ({ field: st.field, text: st.text }));
   return {
     title: answers.problem.value ? String(answers.problem.value).slice(0, 90) : 'Untitled problem',
@@ -292,7 +304,8 @@ function briefMarkdown(s, answers, statements) {
   const lines = [`# Problem brief — ${b.title}`, '', `Type: ${b.category_label ?? 'not set'}  `, `Route to: ${b.route_to}  `, `Version: ${b.version}${b.approved ? ' (approved)' : ' (draft)'}`, ''];
   for (const f of FIELDS) {
     const a = answers[f.key];
-    const shown = a.status === 'unknown' ? `_unknown — ${a.basis}_` : a.status === 'answered' ? (f.key === 'category' ? CATEGORIES[a.value].label : a.value) : `_${a.status}_`;
+    const value = f.key === 'category' && CATEGORIES[a.value] ? CATEGORIES[a.value].label : a.value;
+    const shown = a.status === 'unknown' ? `_unknown — ${a.basis}_` : a.status === 'answered' ? value : a.status === 'suggested' ? `${value} _(guessed — please confirm)_` : '_missing_';
     lines.push(`- **${f.label}:** ${shown}`);
   }
   for (const [title, list] of [['Observed first-hand', b.observations], ['Claims (reported or generalised)', b.claims], ['Assumptions (guesses about cause or fix)', b.assumptions]]) {

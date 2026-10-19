@@ -15,6 +15,48 @@ export async function openStore() {
   return sqliteStore(process.env.INTAKE_DB || 'data/intake.db');
 }
 
+// Wraps a store for the length of one request (one conversational turn): the
+// session and its answers are read once, then kept current from our own writes,
+// so several tool calls in a turn do not re-read the database each time.
+export function cachedStore(store) {
+  const sessions = new Map();
+  const answers = new Map();
+  const copy = (rows) => rows.map((r) => ({ ...r }));
+  return {
+    ...store,
+    async createSession(s) {
+      await store.createSession(s);
+      sessions.set(s.id, { ...s, version: 1 });
+    },
+    async getSession(id) {
+      if (!sessions.has(id)) sessions.set(id, await store.getSession(id));
+      const s = sessions.get(id);
+      return s && { ...s };
+    },
+    async getSessionByCode(code) {
+      const s = await store.getSessionByCode(code);
+      if (s) sessions.set(s.id, s);
+      return s && { ...s };
+    },
+    async updateSession(id, patch) {
+      await store.updateSession(id, patch);
+      if (sessions.get(id)) sessions.set(id, { ...sessions.get(id), ...patch });
+    },
+    async insertAnswers(rows) {
+      await store.insertAnswers(rows);
+      for (const r of rows) answers.set(r.session_id, [...(answers.get(r.session_id) ?? []).filter((a) => a.field !== r.field), { ...r }]);
+    },
+    async getAnswers(sid) {
+      if (!answers.has(sid)) answers.set(sid, await store.getAnswers(sid));
+      return copy(answers.get(sid));
+    },
+    async updateAnswer(sid, field, patch) {
+      await store.updateAnswer(sid, field, patch);
+      if (answers.has(sid)) answers.set(sid, answers.get(sid).map((a) => (a.field === field ? { ...a, ...patch } : a)));
+    },
+  };
+}
+
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS intake_sessions (
     id TEXT PRIMARY KEY,

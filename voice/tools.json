@@ -62,8 +62,8 @@
   {
     "type": "function",
     "function": {
-      "name": "save_answer",
-      "description": "Save what the person said for one field (also used to change an earlier answer). Split their answer into short statements and label each one.",
+      "name": "save_answers",
+      "description": "Save everything the person just said, in ONE call: one entry per field their words cover (any fields, not only the ones just asked). Also used to change earlier answers.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -71,47 +71,60 @@
             "type": "string",
             "description": "The session_id returned by start_intake."
           },
-          "field": {
-            "type": "string",
-            "enum": [
-              "reporter",
-              "problem",
-              "category",
-              "location",
-              "when",
-              "what_happened",
-              "expected",
-              "impact",
-              "tried",
-              "device"
-            ],
-            "description": "Which brief field this is about."
-          },
-          "value": {
-            "type": "string",
-            "description": "Their answer in English, faithful to what they said. For field \"category\" use one of: map_data, navigation_route, traffic_eta, search_places, business_listing, app_performance, telematics_device, account_billing, other."
-          },
-          "statements": {
+          "answers": {
             "type": "array",
-            "description": "Their answer split into short statements. observation = they saw or measured it themselves; claim = reported by others or a generalisation like \"always\"/\"everyone\"; assumption = a guess about cause or fix.",
             "items": {
               "type": "object",
               "properties": {
-                "text": {
-                  "type": "string"
-                },
-                "kind": {
+                "field": {
                   "type": "string",
                   "enum": [
-                    "observation",
-                    "claim",
-                    "assumption"
-                  ]
+                    "problem",
+                    "location",
+                    "when",
+                    "what_happened",
+                    "category",
+                    "expected",
+                    "impact",
+                    "tried",
+                    "reporter",
+                    "device"
+                  ],
+                  "description": "Which brief field this is about."
+                },
+                "value": {
+                  "type": "string",
+                  "description": "Their answer for this field in English, faithful to what they said. For \"category\" use one of: map_data, navigation_route, traffic_eta, search_places, business_listing, app_performance, telematics_device, account_billing, other."
+                },
+                "statements": {
+                  "type": "array",
+                  "description": "This part of their answer as short statements. observation = they saw or measured it themselves; claim = heard from others or a generalisation like \"always\"/\"everyone\"; assumption = a guess about cause or fix.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "text": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "observation",
+                          "claim",
+                          "assumption"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "text",
+                      "kind"
+                    ],
+                    "additionalProperties": false
+                  }
                 }
               },
               "required": [
-                "text",
-                "kind"
+                "field",
+                "value"
               ],
               "additionalProperties": false
             }
@@ -119,8 +132,7 @@
         },
         "required": [
           "session_id",
-          "field",
-          "value"
+          "answers"
         ],
         "additionalProperties": false
       }
@@ -130,7 +142,7 @@
     "type": "function",
     "function": {
       "name": "suggest_answer",
-      "description": "Propose an answer for a still-open field from facts the person already gave. It is NOT saved as their answer until they confirm it with confirm_suggestion.",
+      "description": "Record your best guess for a field the person did not state directly (especially category). It is marked as a guess and is read back for confirmation in the final review.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -141,15 +153,15 @@
           "field": {
             "type": "string",
             "enum": [
-              "reporter",
               "problem",
-              "category",
               "location",
               "when",
               "what_happened",
+              "category",
               "expected",
               "impact",
               "tried",
+              "reporter",
               "device"
             ],
             "description": "Which brief field this is about."
@@ -176,7 +188,7 @@
     "type": "function",
     "function": {
       "name": "confirm_suggestion",
-      "description": "The person said a suggested answer is right. Only call right after they clearly agree.",
+      "description": "The person explicitly said one guessed answer is right (before final approval). Approving the read-back confirms all guesses anyway.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -187,15 +199,15 @@
           "field": {
             "type": "string",
             "enum": [
-              "reporter",
               "problem",
-              "category",
               "location",
               "when",
               "what_happened",
+              "category",
               "expected",
               "impact",
               "tried",
+              "reporter",
               "device"
             ],
             "description": "Which brief field this is about."
@@ -224,15 +236,15 @@
           "field": {
             "type": "string",
             "enum": [
-              "reporter",
               "problem",
-              "category",
               "location",
               "when",
               "what_happened",
+              "category",
               "expected",
               "impact",
               "tried",
+              "reporter",
               "device"
             ],
             "description": "Which brief field this is about."
@@ -294,7 +306,7 @@
     "type": "function",
     "function": {
       "name": "finalize_intake",
-      "description": "Only after reading the latest preview aloud and the person explicitly says approve, or explicitly says cancel. Approving saves the brief for the Mappls team; it does not send anything to anyone.",
+      "description": "Only after reading the latest preview aloud and the person explicitly says approve, or explicitly says cancel. Approving confirms the guessed items that were read back and saves the brief for the Mappls team; it does not send anything to anyone.",
       "parameters": {
         "type": "object",
         "properties": {

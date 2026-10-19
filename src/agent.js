@@ -71,7 +71,8 @@ export async function agentTurn(intake, { messages, text, english, language_code
     const msg = choice.message;
     const calls = msg.tool_calls || [];
     if (!calls.length) {
-      const reply = String(msg.content || '').trim() || 'Sorry, could you say that again?';
+      // Belt and braces for the no-gendered-address rule.
+      const reply = String(msg.content || '').replace(/\b(sir|madam|ma'am)\b[,!]?\s*/gi, '').trim() || 'Sorry, could you say that again?';
       history.push({ role: 'assistant', content: reply });
       return { reply, messages: history, trace, session_id: sessionId };
     }

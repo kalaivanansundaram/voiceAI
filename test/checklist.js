@@ -5,10 +5,12 @@
 import assert from 'node:assert/strict';
 process.env.INTAKE_DB = ':memory:';
 delete process.env.SUPABASE_URL;
-const { openStore } = await import('../src/store.js');
+const { openStore, cachedStore } = await import('../src/store.js');
 const { createIntake, IntakeError } = await import('../src/intake.js');
 
-const intake = createIntake(await openStore());
+const base = await openStore();
+// Like the server: a fresh request-scoped cache per call, over the same database.
+const intake = new Proxy({}, { get: (_, name) => (args) => createIntake(cachedStore(base))[name](args) });
 let passed = 0;
 async function check(name, fn) {
   await fn();
@@ -23,13 +25,14 @@ const rejects = async (p, code) => {
 console.log('Workbook test checklist');
 let s;
 
-await check('starting input is organised into suggestions and visible gaps', async () => {
+await check('opening words become the answer; problem type is a guess; story is asked as one question', async () => {
   s = await intake.start_intake({ starting_input: 'Yesterday at 9am navigation took me into a closed road near Sector 18 Noida. I think the map is outdated.' });
   assert.equal(s.status, 'intake');
   assert.match(s.resume_code, /^\d{6}$/);
   assert.deepEqual(s.organised.known_from_input, ['problem', 'category']);
   assert.equal(s.next.type, 'ask');
-  assert.equal(s.next.field, 'reporter');
+  assert.deepEqual(s.next.fields, ['location', 'when', 'what_happened']);
+  assert.match(s.next.question, /^Tell me what happened: where it happened .* and what exactly you did and saw in the app\.$/);
 });
 
 await check('broken link stops safely', async () => {
@@ -41,77 +44,82 @@ await check('private/local link is refused without being opened', async () => {
   await rejects(intake.start_intake({ starting_input: 'http://192.168.1.10/' }), 'INPUT_UNREADABLE');
 });
 
-await check('answer is saved with labelled statements', async () => {
-  const r = await intake.save_answer({ session_id: s.session_id, field: 'reporter', value: 'Daily commuter, I drive to office in Noida.' });
-  assert.equal(r.saved.statements[0].kind, 'observation');
-  assert.equal(r.next.type, 'confirm');
-  assert.equal(r.next.field, 'problem');
+await check('one answer fills several fields in one call; only what is still missing is asked', async () => {
+  const r = await intake.save_answers({
+    session_id: s.session_id,
+    answers: [
+      { field: 'location', value: 'Atta Market road, Sector 18, Noida' },
+      { field: 'when', value: 'Yesterday 9am; it happens every day this week.', statements: [{ text: 'It happened yesterday at 9am', kind: 'observation' }, { text: 'It happens every day', kind: 'claim' }] },
+    ],
+  });
+  assert.equal(r.saved.length, 2);
+  assert.deepEqual(r.next.fields, ['what_happened'], 'asks only the remaining story field');
 });
 
-await check('saying "confirm" twice does not skip a question', async () => {
-  const first = await intake.confirm_suggestion({ session_id: s.session_id, field: 'problem' });
-  assert.equal(first.next.field, 'category');
-  const again = await intake.confirm_suggestion({ session_id: s.session_id, field: 'problem' });
-  assert.equal(again.next.field, 'category', 'second confirm must not advance');
+await check('volunteered later fields are saved early and never asked again', async () => {
+  const r = await intake.save_answers({
+    session_id: s.session_id,
+    answers: [
+      { field: 'what_happened', value: 'I followed the voice guidance, it said turn left, the road had barricades. Maybe the road closure is not on the map.' },
+      { field: 'impact', value: 'I was 20 minutes late and drove 4 km extra.' },
+    ],
+  });
+  assert.deepEqual(r.next.fields, ['expected']);
+});
+
+await check('saying "confirm" twice does not skip anything', async () => {
+  const first = await intake.confirm_suggestion({ session_id: s.session_id, field: 'category' });
+  assert.deepEqual(first.next.fields, ['expected']);
+  const again = await intake.confirm_suggestion({ session_id: s.session_id, field: 'category' });
+  assert.deepEqual(again.next.fields, ['expected'], 'second confirm must not advance');
   assert.ok(again.note);
 });
 
-await check('suggested category confirmed; wrong category value rejected', async () => {
-  assert.equal((await intake.get_status({ session_id: s.session_id })).next.suggestion, 'navigation_route');
-  await rejects(intake.save_answer({ session_id: s.session_id, field: 'category', value: 'roads' }), 'BAD_CATEGORY');
-  const r = await intake.confirm_suggestion({ session_id: s.session_id, field: 'category' });
-  assert.equal(r.next.field, 'location');
-});
-
-await check('agent suggests from known facts; the person changes it', async () => {
-  await intake.suggest_answer({ session_id: s.session_id, field: 'location', value: 'Sector 18, Noida', basis: 'starting input' });
-  const st = await intake.get_status({ session_id: s.session_id });
-  assert.equal(st.next.type, 'confirm');
-  const r = await intake.save_answer({ session_id: s.session_id, field: 'location', value: 'Atta Market road, Sector 18, Noida — route from Sector 62' });
-  assert.equal(r.next.field, 'when');
+await check('wrong category value is rejected', async () => {
+  await rejects(intake.save_answers({ session_id: s.session_id, answers: [{ field: 'category', value: 'roads' }] }), 'BAD_CATEGORY');
 });
 
 await check('pause and resume returns to the same question', async () => {
   const p = await intake.pause_intake({ session_id: s.session_id });
   assert.equal(p.status, 'paused');
-  await rejects(intake.save_answer({ session_id: s.session_id, field: 'when', value: 'x' }), 'PAUSED');
+  await rejects(intake.save_answers({ session_id: s.session_id, answers: [{ field: 'expected', value: 'x' }] }), 'PAUSED');
   const r = await intake.resume_intake({ resume_code: s.resume_code.split('').join(' ') });
   assert.equal(r.status, 'intake');
-  assert.equal(r.next.field, 'when');
+  assert.deepEqual(r.next.fields, ['expected']);
 });
 
 await check('disconnect and return: saved progress is still there', async () => {
   const st = await intake.get_status({ session_id: s.session_id });
-  assert.equal(st.progress, '4/10');
+  assert.equal(st.progress, '6/10');
 });
 
 await check('claims and assumptions are separated from observations', async () => {
-  await intake.save_answer({
-    session_id: s.session_id, field: 'when', value: 'Yesterday 9am; it happens every day this week.',
-    statements: [{ text: 'It happened yesterday at 9am', kind: 'observation' }, { text: 'It happens every day', kind: 'claim' }],
-  });
-  await intake.save_answer({ session_id: s.session_id, field: 'what_happened', value: 'I followed the voice guidance, it said turn left, the road had barricades. Maybe the road closure is not on the map.' });
   const p = await intake.get_preview({ session_id: s.session_id });
   assert.ok(p.brief.claims.some((c) => c.text.includes('every day')));
-  assert.ok(p.brief.assumptions.some((c) => /Maybe/.test(c.text)));
+  assert.ok(p.brief.assumptions.some((c) => /Maybe|I think/.test(c.text)));
   assert.ok(p.brief.observations.length >= 2);
 });
 
-await check('unknown stays a visible gap instead of being invented', async () => {
-  await intake.save_answer({ session_id: s.session_id, field: 'expected', value: 'A route avoiding the closed road.' });
-  await intake.save_answer({ session_id: s.session_id, field: 'impact', value: 'I was 20 minutes late and drove 4 km extra.' });
-  await intake.save_answer({ session_id: s.session_id, field: 'tried', value: 'I re-routed manually.' });
+await check('the agent can suggest a field; it stays a guess until approval', async () => {
+  const r = await intake.suggest_answer({ session_id: s.session_id, field: 'reporter', value: 'Drives to office', basis: 'said "drive to office"' });
+  assert.deepEqual(r.next.fields, ['expected'], 'a guess does not block or get asked');
+});
+
+await check('unknown stays a visible gap; guesses are listed for confirmation at review', async () => {
+  await intake.save_answers({ session_id: s.session_id, answers: [{ field: 'expected', value: 'A route avoiding the closed road.' }, { field: 'tried', value: 'I re-routed manually.' }] });
   const r = await intake.mark_unknown({ session_id: s.session_id, field: 'device', reason: 'does not know the app version' });
   assert.equal(r.status, 'review');
+  assert.deepEqual(r.next.to_confirm, ['reporter']);
   const p = await intake.get_preview({ session_id: s.session_id });
   assert.deepEqual(p.brief.gaps.map((g) => g.field), ['device']);
+  assert.match(p.brief_markdown, /Drives to office _\(guessed — please confirm\)_/);
   assert.equal(p.ready_to_approve, true);
 });
 
 let preview;
 await check('changed answer keeps the new version; an old preview cannot be approved', async () => {
   const before = await intake.get_preview({ session_id: s.session_id });
-  await intake.save_answer({ session_id: s.session_id, field: 'impact', value: 'I was 25 minutes late and drove 4 km extra.' });
+  await intake.save_answers({ session_id: s.session_id, answers: [{ field: 'impact', value: 'I was 25 minutes late and drove 4 km extra.' }] });
   preview = await intake.get_preview({ session_id: s.session_id });
   assert.equal(preview.brief.fields.impact.value, 'I was 25 minutes late and drove 4 km extra.');
   assert.ok(preview.version > before.version);
@@ -123,7 +131,7 @@ await check('changed answer keeps the new version; an old preview cannot be appr
 await check('final preview matches every saved answer', async () => {
   const md = preview.brief_markdown;
   for (const [key, f] of Object.entries(preview.brief.fields)) {
-    if (f.status === 'answered' && key !== 'category') assert.ok(md.includes(f.value), `${key} missing from preview`);
+    if (f.value && key !== 'category') assert.ok(md.includes(f.value), `${key} missing from preview`);
   }
   assert.ok(md.includes('Navigation & routes'));
 });
@@ -137,14 +145,17 @@ await check('cancel: nothing filled or submitted, intake locked', async () => {
   const t = await intake.start_intake({ starting_input: 'App crashes when I open saved places.' });
   const c = await intake.finalize_intake({ session_id: t.session_id, decision: 'cancel', preview_version: t.version });
   assert.equal(c.status, 'cancelled');
-  await rejects(intake.save_answer({ session_id: t.session_id, field: 'reporter', value: 'x' }), 'LOCKED');
+  await rejects(intake.save_answers({ session_id: t.session_id, answers: [{ field: 'reporter', value: 'x' }] }), 'LOCKED');
 });
 
-await check('approve the exact preview version, then locked', async () => {
+await check('approving the exact read-back confirms the guesses, then locks', async () => {
   const a = await intake.finalize_intake({ session_id: s.session_id, decision: 'approve', preview_version: preview.version });
   assert.equal(a.status, 'approved');
   assert.equal(a.approved_version, preview.version);
-  await rejects(intake.save_answer({ session_id: s.session_id, field: 'impact', value: 'x' }), 'LOCKED');
+  assert.deepEqual(a.confirmed_on_approval, ['reporter']);
+  const p = await intake.get_preview({ session_id: s.session_id });
+  assert.equal(p.brief.fields.reporter.status, 'answered');
+  await rejects(intake.save_answers({ session_id: s.session_id, answers: [{ field: 'impact', value: 'x' }] }), 'LOCKED');
 });
 
 console.log(`\n${passed} checks passed.`);

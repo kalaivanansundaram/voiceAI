@@ -43,7 +43,7 @@ Needs Node 22+.
 ```bash
 cp .env.example .env      # then put your Sarvam key in .env (never in chat or git)
 npm start                 # http://localhost:3000
-npm test                  # runs the workbook "Test it" checklist (16 checks, no credit used)
+npm test                  # runs the workbook "Test it" checklist (17 checks, no credit used)
 ```
 
 Without `SARVAM_API_KEY` the page still works in Guided form mode. Locally, sessions are saved in `data/intake.db`.
